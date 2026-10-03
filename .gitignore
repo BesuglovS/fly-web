@@ -1,0 +1,16 @@
+# секреты — не коммитить
+.env
+.env.local
+.env.*.local
+ssh-private.key
+*.key
+*.pem
+*.ppk
+id_rsa*
+id_ed25519*
+
+# зависимости / служебное
+node_modules/
+Thumbs.db
+desktop.ini
+.DS_Store

@@ -1,0 +1,340 @@
+:root{
+    --front:#ff3b30;
+    --back:#ffffff;
+    --left:#39d353;
+    --right:#3b9dff;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#0b0f14;
+    font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;color:#eaf2ff;
+    -webkit-user-select:none;user-select:none;touch-action:none;overscroll-behavior:none}
+  #app{position:fixed;inset:0}
+  canvas{display:block}
+  /* FPV-оверлей: авиагоризонт и HUD-разметка */
+  #fpvHud{position:fixed;inset:0;z-index:3;pointer-events:none}
+
+  /* ---------- HUD ---------- */
+  #hud{position:fixed;top:12px;left:12px;z-index:5;min-width:186px;
+    background:rgba(10,16,24,.62);border:1px solid rgba(255,255,255,.14);
+    border-radius:12px;padding:10px 12px;backdrop-filter:blur(6px);
+    font-size:13px;line-height:1.5;pointer-events:none}
+  #hud .ttl{font-weight:700;letter-spacing:.4px;margin-bottom:6px;color:#9fd0ff;font-size:12px}
+  #hud .row{display:flex;justify-content:space-between;gap:14px}
+  #hud .row span{color:#9bb0c6}
+  #hud .row b{font-variant-numeric:tabular-nums}
+  #hud .row b.bat-low{color:#ff5c4d}
+  #compass{margin-top:8px;position:relative;height:52px;border-radius:8px;
+    background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);
+    display:flex;align-items:center;justify-content:center;overflow:hidden}
+  #compass .n{position:absolute;top:2px;left:50%;transform:translateX(-50%);font-size:10px;color:#ff6b6b;font-weight:700}
+  #compassArrow{width:0;height:0;border-left:7px solid transparent;border-right:7px solid transparent;
+    border-bottom:22px solid #9fd0ff;transform-origin:50% 100%;position:absolute;top:20px;filter:drop-shadow(0 0 4px rgba(159,208,255,.7))}
+  #vHdg{position:absolute;bottom:2px;right:8px;font-size:12px;font-weight:700}
+  #compassRing{position:absolute;inset:0}
+
+  /* ---------- Legend ---------- */
+  #legend{position:fixed;top:12px;right:12px;z-index:5;
+    background:rgba(10,16,24,.62);border:1px solid rgba(255,255,255,.14);
+    border-radius:12px;padding:10px 12px;backdrop-filter:blur(6px);
+    font-size:12px;line-height:1.7;pointer-events:none}
+  #legend .inner{position:relative}
+  #legend .ttl{font-weight:700;color:#9fd0ff;margin-bottom:4px;font-size:12px}
+  #legend i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:7px;
+    vertical-align:-1px;box-shadow:0 0 6px rgba(0,0,0,.6) inset}
+
+  /* ---------- Level bar ---------- */
+  #levelbar{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:5;
+    background:rgba(10,16,24,.66);border:1px solid rgba(255,255,255,.14);
+    border-radius:12px;padding:8px 14px;backdrop-filter:blur(6px);
+    font-size:12px;line-height:1.45;text-align:center;
+    min-width:280px;max-width:min(600px,92vw);pointer-events:none}
+  #levelbar .lv{font-weight:700;color:#9fd0ff;letter-spacing:.3px;font-size:13px}
+  #levelbar .obj{color:#dbe8f7;margin-top:2px}
+  #levelbar .obj.ok{color:#39d353;font-weight:700}
+  #levelbar .meta{margin-top:5px;display:flex;gap:14px;justify-content:center;
+    color:#9bb0c6;font-variant-numeric:tabular-nums;flex-wrap:wrap}
+  #levelbar .warn{color:#ff6b6b;font-weight:700}
+  #levelbar .ok{color:#39d353;font-weight:700}
+
+  /* ---------- Level menu ---------- */
+  #menuBtn{pointer-events:auto;display:block;width:100%;margin-bottom:8px;
+    background:rgba(159,208,255,.15);border:1px solid rgba(159,208,255,.5);
+    color:#cfe6ff;border-radius:8px;padding:6px 8px;font-size:12px;font-weight:700;
+    cursor:pointer;letter-spacing:.3px}
+  #menuBtn:hover{background:rgba(159,208,255,.28)}
+  #levelmenu{display:none;position:absolute;top:42px;right:0;width:246px;max-height:64vh;
+    overflow:auto;background:rgba(8,13,20,.97);border:1px solid rgba(255,255,255,.18);
+    border-radius:10px;padding:6px;pointer-events:auto;
+    box-shadow:0 14px 40px rgba(0,0,0,.6);z-index:20}
+  #levelmenu.open{display:block}
+  #levelmenu button{display:block;width:100%;text-align:left;background:transparent;border:0;
+    color:#dbe8f7;font-size:12px;padding:7px 9px;border-radius:7px;cursor:pointer;line-height:1.35}
+  #levelmenu button:hover{background:rgba(159,208,255,.16)}
+  #levelmenu button.active{background:rgba(57,211,83,.18);color:#c9ffd6}
+  #levelmenu button small{display:block;color:#8fa6bd;font-size:10.5px;margin-top:1px}
+
+  /* ---------- Overlay ---------- */
+  #overlay{position:fixed;inset:0;z-index:30;display:none;align-items:center;justify-content:center;
+    background:rgba(4,8,13,.6);backdrop-filter:blur(3px)}
+  #overlay.show{display:flex}
+  #overlay .card{background:rgba(12,19,28,.98);border:1px solid rgba(255,255,255,.16);
+    border-radius:16px;padding:22px 26px;max-width:min(460px,92vw);text-align:center;
+    box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  #overlay h2{margin:0 0 6px;font-size:22px;color:#9fd0ff}
+  #overlay p{margin:4px 0 14px;color:#cfe0f5;font-size:13px;line-height:1.5}
+  #overlay .btns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+  #overlay button{background:rgba(159,208,255,.18);border:1px solid rgba(159,208,255,.55);
+    color:#eaf6ff;border-radius:10px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer}
+  #overlay button:hover{background:rgba(159,208,255,.3)}
+  #overlay button.primary{background:#2f8fff;border-color:#2f8fff;color:#fff}
+  #overlay button.primary:hover{background:#4aa0ff}
+  #overlay .stars{font-size:22px;letter-spacing:4px;color:#ffd23f;margin:2px 0 10px}
+
+  /* ---------- Help ---------- */
+  #help{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);z-index:4;
+    background:rgba(10,16,24,.55);border:1px solid rgba(255,255,255,.12);
+    border-radius:12px;padding:9px 14px;backdrop-filter:blur(6px);
+    font-size:12px;line-height:1.55;text-align:center;color:#cfe0f5;max-width:min(560px,92vw);pointer-events:none}
+  #help b{color:#9fd0ff}
+  #help .hint{color:#8fa6bd;font-size:11px;margin-top:3px}
+
+  /* ---------- Sticks ---------- */
+  .stick{position:fixed;bottom:26px;width:158px;height:158px;border-radius:50%;
+    z-index:6;touch-action:none;cursor:grab;
+    background:radial-gradient(circle at 50% 42%, rgba(255,255,255,.10), rgba(0,0,0,.34) 70%);
+    border:2px solid rgba(255,255,255,.45);
+    box-shadow:0 6px 24px rgba(0,0,0,.45), inset 0 0 22px rgba(0,0,0,.4)}
+  .stick:active{cursor:grabbing}
+  #stickLeft{left:26px}
+  #stickRight{right:26px}
+  .stick .axis{position:absolute;background:rgba(255,255,255,.16)}
+  .stick .axis.h{left:8%;right:8%;top:50%;height:2px}
+  .stick .axis.v{top:8%;bottom:8%;left:50%;width:2px}
+  .stick .knob{position:absolute;left:50%;top:50%;width:62px;height:62px;margin:-31px 0 0 -31px;
+    border-radius:50%;background:radial-gradient(circle at 40% 35%, #ffffff, #b9cbe0 60%, #7f95ad);
+    border:2px solid rgba(255,255,255,.9);
+    box-shadow:0 4px 14px rgba(0,0,0,.5), inset 0 -4px 8px rgba(0,0,0,.25);
+    transition:transform .04s linear}
+  .stick .cap{position:absolute;left:50%;bottom:-22px;transform:translateX(-50%);
+    font-size:10px;letter-spacing:.5px;color:#a9bdd4;white-space:nowrap;font-weight:600}
+
+  /* ---------- Gamepad status + modal ---------- */
+  #legend{pointer-events:auto}
+  #legend .ttl{pointer-events:none}
+  #legend > div:not(.inner):not(.panel-body):not(.panel-head){pointer-events:none}
+  #legend .panel-body,#legend .panel-head{pointer-events:auto}
+  #gpStatus{margin-top:8px;font-size:11.5px;font-weight:600;color:#9bb0c6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #gpStatus.ok{color:#39d353}
+  #gpBtn{display:block;width:100%;margin-top:6px;background:rgba(57,211,83,.16);
+    border:1px solid rgba(57,211,83,.5);color:#c9ffd6;border-radius:8px;padding:6px 8px;
+    font-size:12px;font-weight:700;cursor:pointer;letter-spacing:.3px}
+  #gpBtn:hover{background:rgba(57,211,83,.28)}
+  #modeBtn{display:block;width:100%;margin-top:6px;background:rgba(59,157,255,.16);
+    border:1px solid rgba(59,157,255,.5);color:#cfe6ff;border-radius:8px;padding:6px 8px;
+    font-size:12px;font-weight:700;cursor:pointer;letter-spacing:.3px}
+  #modeBtn:hover{background:rgba(59,157,255,.28)}
+
+  #gpModal{position:fixed;inset:0;z-index:40;display:none;align-items:center;justify-content:center;
+    background:rgba(4,8,13,.66);backdrop-filter:blur(4px)}
+  #gpModal.show{display:flex}
+  #gpModal .gp-card{background:rgba(12,19,28,.98);border:1px solid rgba(255,255,255,.16);
+    border-radius:16px;padding:20px 22px;width:min(560px,94vw);max-height:90vh;overflow:auto;
+    box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  #gpModal h2{margin:0 0 6px;font-size:20px;color:#9fd0ff}
+  #gpModal h3{margin:16px 0 6px;font-size:14px;color:#9fd0ff}
+  #gpModal .gp-lead,#gpModal .gp-hint{margin:4px 0 12px;color:#a9bdd4;font-size:12px;line-height:1.5}
+  #gpModal .gp-row{display:flex;justify-content:space-between;gap:12px;font-size:13px;margin-bottom:6px}
+  #gpModal .gp-row b.ok{color:#39d353}
+  #gpModal .gp-grid{display:grid;gap:6px}
+  #gpModal .gp-map{grid-template-columns:1fr 1fr}
+  #gpModal .gp-params{grid-template-columns:1fr 1fr}
+  #gpModal .gp-param{display:flex;flex-direction:column;gap:4px;font-size:12px;color:#cfe0f5}
+  #gpModal select,#gpModal input[type=range]{width:100%}
+  #gpModal select{background:#0e1622;color:#eaf2ff;border:1px solid rgba(255,255,255,.2);
+    border-radius:7px;padding:5px 6px;font-size:12px}
+  .gp-axis{display:flex;align-items:center;gap:8px;font-size:11px;color:#9bb0c6}
+  .gp-axis .bar{flex:1;height:8px;background:rgba(255,255,255,.08);border-radius:5px;overflow:hidden;position:relative}
+  .gp-axis .bar i{position:absolute;top:0;bottom:0;left:50%;width:2px;background:rgba(255,255,255,.25)}
+  .gp-axis .bar b{position:absolute;top:0;bottom:0;background:#3b9dff;width:0}
+  .gp-axis.hot .bar b{background:#ffd23f}
+  .gp-axis .val{width:42px;text-align:right;font-variant-numeric:tabular-nums}
+  .gp-map .gp-chan{display:flex;flex-direction:column;gap:3px;font-size:12px;color:#cfe0f5}
+  .gp-map .gp-chan select{width:100%}
+  .gp-map .gp-inv{display:flex;align-items:center;gap:6px;font-size:11px;color:#9bb0c6}
+  .gp-map .gp-learn{margin-top:2px;background:rgba(159,208,255,.12);border:1px solid rgba(159,208,255,.4);
+    color:#cfe6ff;border-radius:7px;padding:4px 8px;font-size:11px;cursor:pointer}
+  .gp-map .gp-learn:hover{background:rgba(159,208,255,.24)}
+  .gp-map .gp-learn.learning{background:rgba(255,210,63,.22);border-color:#ffd23f;color:#ffe9a8}
+  #gpModal .gp-btns{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;margin-top:18px}
+  #gpModal button{background:rgba(159,208,255,.18);border:1px solid rgba(159,208,255,.55);
+    color:#eaf6ff;border-radius:10px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
+  #gpModal button:hover{background:rgba(159,208,255,.3)}
+  #gpModal button.primary{background:#2f8fff;border-color:#2f8fff;color:#fff}
+  #gpModal button.primary:hover{background:#4aa0ff}
+  #gpModal .gp-btns button{width:auto}
+
+  /* ---------- Config modal (модель и оборудование) ---------- */
+  #cfgModal{position:fixed;inset:0;z-index:40;display:none;align-items:center;justify-content:center;
+    background:rgba(4,8,13,.66);backdrop-filter:blur(4px)}
+  #cfgModal.show{display:flex}
+  #cfgModal .gp-card{background:rgba(12,19,28,.98);border:1px solid rgba(255,255,255,.16);
+    border-radius:16px;padding:20px 22px;width:min(560px,94vw);max-height:90vh;overflow:auto;
+    box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  #cfgModal h2{margin:0 0 10px;font-size:20px;color:#9fd0ff}
+  .cfg-models{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px}
+  .cfg-card{display:block;background:rgba(159,208,255,.08);border:1px solid rgba(159,208,255,.28);
+    color:#cfe0f5;border-radius:10px;padding:9px 11px;font-size:12px;cursor:pointer;text-align:left}
+  .cfg-card b{display:block;color:#9fd0ff;font-size:13px;margin-bottom:2px}
+  .cfg-card.sel{border-color:#ffd23f;background:rgba(255,210,63,.14)}
+  #cfgModal select{background:#0e1622;color:#eaf2ff;border:1px solid rgba(255,255,255,.2);
+    border-radius:7px;padding:5px 6px;font-size:12px}
+  #cfgModal .gp-param{display:flex;flex-direction:column;gap:4px;font-size:12px;color:#cfe0f5}
+  #cfgModal button.primary{background:#2f8fff;border:1px solid #2f8fff;color:#fff;
+    border-radius:10px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
+  #cfgModal button.primary:hover{background:#4aa0ff}
+  #cfgStats{color:#9fd0ff;font-size:12px}
+
+  /* ---------- Стартовый экран (выбор БПЛА и режима) ---------- */
+  #startScreen{position:fixed;inset:0;z-index:45;display:none;align-items:center;justify-content:center;
+    background:rgba(5,10,16,.82);backdrop-filter:blur(6px)}
+  #startScreen.show{display:flex}
+  #startScreen .st-card{background:rgba(12,19,28,.98);border:1px solid rgba(255,255,255,.16);
+    border-radius:18px;padding:22px 24px;width:min(640px,94vw);max-height:92vh;overflow:auto;
+    box-shadow:0 24px 70px rgba(0,0,0,.65)}
+  .st-title{font-size:21px;color:#9fd0ff;margin:0 0 4px;font-weight:700}
+  .st-sub{color:#8fa6bd;font-size:12px;margin:0 0 14px}
+  .st-h3{font-size:13px;color:#9fd0ff;margin:14px 0 8px;letter-spacing:.4px}
+  .st-models{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .st-card .cfg-card{background:rgba(159,208,255,.08)}
+  .st-modes{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .st-mode{background:rgba(159,208,255,.14);border:1px solid rgba(159,208,255,.5);
+    color:#eaf6ff;border-radius:12px;padding:14px 16px;font-size:14px;font-weight:700;
+    cursor:pointer;text-align:left}
+  .st-mode small{display:block;color:#a9bdd4;font-size:11.5px;font-weight:500;margin-top:3px}
+  .st-mode:hover{background:rgba(159,208,255,.26)}
+  .st-mode.st-small{padding:8px 12px;font-size:12.5px}
+  .st-levels{display:grid;gap:5px}
+  .st-levels button{display:block;width:100%;text-align:left;background:rgba(159,208,255,.06);
+    border:1px solid transparent;color:#dbe8f7;font-size:12.5px;padding:8px 10px;
+    border-radius:8px;cursor:pointer;line-height:1.35}
+  .st-levels button small{color:#8fa6bd;font-size:10.5px;display:block;margin-top:1px}
+  .st-levels button:hover{background:rgba(159,208,255,.16);border-color:rgba(159,208,255,.35)}
+  .st-levels button.active{background:rgba(57,211,83,.14);color:#c9ffd6;border-color:rgba(57,211,83,.4)}
+  .st-back{margin-top:14px;background:transparent;border:1px solid rgba(159,208,255,.4);
+    color:#9fd0ff;border-radius:9px;padding:7px 13px;font-size:12px;cursor:pointer}
+  .st-back:hover{background:rgba(159,208,255,.12)}
+  .st-go{background:#2f8fff;border:1px solid #2f8fff;color:#fff;border-radius:11px;
+    padding:10px 20px;font-size:14px;font-weight:700;cursor:pointer}
+  .st-go:hover{background:#4aa0ff}
+  .st-foot{display:flex;gap:10px;justify-content:flex-end;align-items:center;margin-top:16px;flex-wrap:wrap}
+  .st-foot .gp-sec{margin-right:auto}
+  .st-gpbtn{background:rgba(57,211,83,.14);border:1px solid rgba(57,211,83,.5);color:#c9ffd6;
+    border-radius:9px;padding:8px 14px;font-size:12.5px;font-weight:600;cursor:pointer}
+  .st-gpbtn:hover{background:rgba(57,211,83,.26)}
+  @media (max-width:560px){
+    .st-models,.st-modes{grid-template-columns:1fr}
+  }
+
+  /* ---------- Сетевая игра ---------- */
+  #netModal{position:fixed;inset:0;z-index:40;display:none;align-items:center;justify-content:center;
+    background:rgba(4,8,13,.66);backdrop-filter:blur(4px)}
+  #netModal.show{display:flex}
+  #netModal .gp-card{background:rgba(12,19,28,.98);border:1px solid rgba(255,255,255,.16);
+    border-radius:16px;padding:20px 22px;width:min(560px,94vw);max-height:90vh;overflow:auto;
+    box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  #netModal h2{margin:0 0 6px;font-size:20px;color:#9fd0ff}
+  #netModal textarea{width:100%;min-height:64px;background:#0e1622;color:#cfe6ff;
+    border:1px solid rgba(255,255,255,.25);border-radius:8px;padding:7px;font-size:12px;font-family:inherit}
+  .net-row{justify-content:flex-start;margin:12px 0}
+  .net-row button{background:rgba(159,208,255,.18);border:1px solid rgba(159,208,255,.55);
+    color:#eaf6ff;border-radius:10px;padding:9px 15px;font-size:13px;font-weight:600;cursor:pointer}
+  .net-row button:hover{background:rgba(159,208,255,.3)}
+  .net-step{margin:10px 0 4px;font-size:12px;color:#cfe0f5;line-height:1.5}
+  .net-code{width:100%;margin:6px 0 10px;display:block}
+  #gpRescan{display:block;width:100%;margin:10px 0 12px;
+    background:rgba(255,210,63,.14);border:1px solid rgba(255,210,63,.5);color:#ffe9a8}
+
+  @media (max-width:560px){
+    #help{display:none}
+    #legend{font-size:11px;padding:8px 9px;top:104px}
+    #hud{font-size:12px;min-width:150px;top:104px}
+    #levelbar{top:8px;min-width:0;max-width:calc(100vw - 16px);padding:6px 10px;font-size:11px}
+    #levelbar .obj{white-space:normal}
+    #gpModal .gp-map,#gpModal .gp-params{grid-template-columns:1fr}
+  }
+  /* coarse pointer: крупные тач-кнопки */
+  #rotateHint{display:none}
+  @media (pointer: coarse){
+    #legend button, #menuBtn{padding:9px 11px;min-height:38px}
+    .stick .cap{bottom:-26px;font-size:11px}
+    /* на тач-устройствах клавиатурные подсказки не нужны и загораживают вид */
+    #help{display:none}
+    /* весь интерфейс прячем: остаётся полётный вид, стики и кнопка меню */
+    #hud, #levelbar{display:none}
+    #legend{background:none;border:none;padding:0;box-shadow:none;pointer-events:none}
+    #legend .ttl{display:none}
+    #legend .inner > *{display:none}
+    #legend .inner #menuBtn{
+      display:block;width:42px;height:42px;min-height:0;padding:0;
+      position:fixed;top:12px;right:12px;z-index:46;border-radius:50%;
+      background:rgba(10,16,24,.66);border:1px solid rgba(255,255,255,.35);
+      color:#eaf2ff;font-size:17px;pointer-events:auto}
+    #legend .inner #menuBtn:active{cursor:pointer}
+    #rotateHint{display:none;position:fixed;bottom:210px;left:50%;transform:translateX(-50%);
+      z-index:4;background:rgba(159,208,255,.2);border:1px solid rgba(159,208,255,.5);
+      color:#eaf6ff;border-radius:10px;padding:9px 15px;font-size:12px;text-align:center;
+      max-width:min(420px,92vw)}
+  }
+  @media (pointer: coarse) and (orientation: landscape){
+    /* на горизонтальном телефоне список уровней — в две колонки и плотнее,
+       иначе 15 пунктов занимают весь экран */
+    .st-levels{grid-template-columns:1fr 1fr;gap:4px}
+    .st-levels button{padding:6px 8px;font-size:11.5px}
+    .st-levels button small{font-size:10px}
+    #startScreen .st-card{max-height:100vh;max-width:min(760px,96vw);padding:12px 16px}
+    .st-title{font-size:17px}
+    .st-h3{margin:9px 0 6px}
+    .st-back{margin-top:9px;padding:6px 12px}
+  }
+  @media (pointer: coarse) and (orientation: portrait){
+    #rotateHint{display:block}
+  }
+
+.sw-front{background:var(--front)}
+.sw-back{background:var(--back)}
+.sw-left{background:var(--left)}
+.sw-right{background:var(--right)}
+
+  /* ---------- Сворачиваемые окна ---------- */
+  .win-head{display:flex;align-items:center;justify-content:space-between;gap:12px;
+    position:sticky;top:0;z-index:3;background:rgba(12,19,28,.98);
+    margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,.12)}
+  .win-head h2,.win-head .st-title{margin:0}
+  .win-head .st-title{font-size:19px}
+  .win-toggle{flex:0 0 auto;min-height:0;padding:6px 10px;white-space:nowrap;
+    display:flex;align-items:center;justify-content:center;
+    background:rgba(159,208,255,.14);border:1px solid rgba(159,208,255,.45);
+    color:#cfe6ff;border-radius:8px;font-size:12px;font-weight:700;line-height:1;cursor:pointer}
+  .win-toggle:hover{background:rgba(159,208,255,.26)}
+  .win-body{min-height:0}
+  .gp-card.min,.st-card.min,.card.min{width:auto}
+  .gp-card.min .win-body,.st-card.min .win-body,.card.min .win-body{display:none}
+  .gp-card.min .win-head,.st-card.min .win-head,.card.min .win-head{
+    margin-bottom:0;padding-bottom:0;border-bottom:0}
+  @media (pointer: coarse){
+    .win-toggle{min-height:36px;padding:8px 12px;font-size:13px;border-radius:10px}
+  }
+
+  /* ---------- Сворачиваемые панели поверх полёта ---------- */
+  .panel-head{display:flex;align-items:center;gap:8px}
+  .panel-head .ttl,.panel-head .lv{margin-bottom:0}
+  .panel-title{color:#9fd0ff;font-weight:700;font-size:12px;letter-spacing:.4px}
+  .panel-body{margin-top:6px;min-height:0}
+  .panel-toggle{pointer-events:auto;margin-left:auto;flex:0 0 auto;
+    background:rgba(159,208,255,.14);border:1px solid rgba(159,208,255,.4);
+    color:#cfe6ff;border-radius:6px;font-size:11px;line-height:1;padding:2px 7px;cursor:pointer}
+  .panel-toggle:hover{background:rgba(159,208,255,.28)}
+  .collapsed > .panel-body{display:none}
+  @media (pointer: coarse){
+    .panel-toggle,.panel-title{display:none}
+  }

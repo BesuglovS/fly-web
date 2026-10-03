@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Симулятор полёта БПЛА — два стика</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app"></div>
+<canvas id="fpvHud" width="0" height="0"></canvas>
+<div id="rotateHint">📱 Поверните устройство горизонтально — так удобнее пилотировать</div>
+
+<div id="hud">
+  <div class="ttl">ТЕЛЕМЕТРИЯ</div>
+  <div class="row"><span>Высота</span><b id="vAlt">0.0 м</b></div>
+  <div class="row"><span>Скорость</span><b id="vSpd">0.0 м/с</b></div>
+  <div class="row"><span>Газ</span><b id="vThr">50%</b></div>
+  <div class="row"><span>Тангаж</span><b id="vPitch">0°</b></div>
+  <div class="row"><span>Крен</span><b id="vRoll">0°</b></div>
+  <div class="row"><span>Режим</span><b id="vMode">Angle</b></div>
+  <div class="row"><span>Аккум.</span><b id="vBat">100%</b></div>
+  <div id="compass">
+    <div class="n">НОС</div>
+    <div id="compassArrow"></div>
+    <span id="vHdg">0°</span>
+  </div>
+</div>
+
+<div id="levelbar">
+  <div class="lv" id="lvName">Загрузка…</div>
+  <div class="obj" id="lvObj">—</div>
+  <div class="meta">
+    <span id="lvProg">0 / 0</span>
+    <span id="lvTime">0.0 с</span>
+    <span id="lvDist">—</span>
+    <span id="lvWarn"></span>
+  </div>
+</div>
+
+<div id="legend">
+  <div class="inner">
+    <button id="menuBtn" type="button">УРОВНИ ▾</button>
+    <div id="levelmenu"></div>
+    <div id="gpStatus">○ Пульт не найден</div>
+    <button id="gpBtn" type="button">🎮 НАСТРОЙКА ПУЛЬТА</button>
+    <button id="modeBtn" type="button">Режим: Angle</button>
+    <button id="camBtn" type="button">Камера: Погоня</button>
+    <button id="cfgBtn" type="button">⚙ МОДЕЛЬ И ОБОРУД.</button>
+    <button id="netBtn" type="button">🌐 СЕТЕВАЯ ИГРА</button>
+    <button id="fsBtn" type="button">⛶ ПОЛНЫЙ ЭКРАН</button>
+  </div>
+  <div class="ttl">ОРИЕНТАЦИЯ</div>
+  <div><i class="sw-front"></i>Перед — нос</div>
+  <div><i class="sw-back"></i>Зад — хвост</div>
+  <div><i class="sw-left"></i>Лево</div>
+  <div><i class="sw-right"></i>Право</div>
+</div>
+
+<div id="gpModal" aria-hidden="true">
+  <div class="gp-card">
+    <h2>Подключение пульта</h2>
+    <p class="gp-lead">Подключите пульт (BetaFPV и др.) USB-кабелем или по Bluetooth, затем включите его. В браузере устройство появится после первого нажатия любого стика/кнопки.</p>
+    <div class="gp-row"><span class="gp-label">Статус</span><b id="gpModalStatus">○ Пульт не найден</b></div>
+    <div class="gp-row"><span class="gp-label">Найдено устройств</span><b id="gpModalCount">0</b></div>
+    <label class="gp-param">Устройство<select id="gpDevice"></select></label>
+    <p class="gp-hint" id="gpModalHint">Если пульт не виден: включите его, переведите в режим USB-джойстика (HID), затем нажмите любую кнопку/стик при активной вкладке. Chrome/Edge показывают устройство только после первого действия.</p>
+    <button id="gpRescan" type="button">🔄 Найти пульт</button>
+    <div class="gp-grid" id="gpAxesLive"></div>
+    <h3>Назначение осей</h3>
+    <p class="gp-hint">Двигайте стики — загорится соответствующая ось. Назначьте каждому каналу нужную ось и при необходимости инвертируйте направление.</p>
+    <div class="gp-grid gp-map" id="gpMap"></div>
+    <h3>Параметры</h3>
+    <div class="gp-grid gp-params">
+      <label class="gp-param">Тип стика газа
+        <select id="gpThrMode">
+          <option value="centered">Самовозвратный (центр = висение)</option>
+          <option value="full">Несамовозвратный (от края до края)</option>
+        </select>
+      </label>
+      <label class="gp-param">Мёртвая зона (<span id="gpDzVal">0.06</span>)
+        <input type="range" id="gpDz" min="0" max="0.30" step="0.01" value="0.06">
+      </label>
+      <label class="gp-param">Кнопка «взвести»
+        <select id="gpArm"></select>
+      </label>
+      <label class="gp-param">Кнопка камеры<select id="gpBtnCam"></select></label>
+      <label class="gp-param">Кнопка «заново»<select id="gpBtnRst"></select></label>
+      <label class="gp-param">Кнопка «след. уровень»<select id="gpBtnNxt"></select></label>
+    </div>
+    <div class="gp-btns">
+      <button id="gpEnable" type="button">Включить пульт</button>
+      <button id="gpDefaults" type="button">Сбросить расклад</button>
+      <button class="primary" id="gpClose" type="button">Готово</button>
+    </div>
+  </div>
+</div>
+
+<div id="cfgModal" aria-hidden="true">
+  <div class="gp-card">
+    <h2>Модель и оборудование</h2>
+    <div class="cfg-models" id="cfgModels"></div>
+    <div class="gp-grid gp-params">
+      <label class="gp-param">Моторы<select id="cfgMotor"></select></label>
+      <label class="gp-param">Винты<select id="cfgProp"></select></label>
+      <label class="gp-param">Аккумулятор<select id="cfgBattery"></select></label>
+      <label class="gp-param">Карта свободного полёта<select id="cfgMap"></select></label>
+    </div>
+    <p class="gp-hint" id="cfgStats">—</p>
+    <p class="gp-hint">Сборка влияет на тягу, скорость, отзывчивость и автономность. Батарея расходуется в полёте (при разряде тяга падает) и пополняется на новом уровне.</p>
+    <div class="gp-btns">
+      <button class="primary" id="cfgClose" type="button">Готово</button>
+    </div>
+  </div>
+</div>
+
+<div id="startScreen" aria-hidden="true"><div class="st-card" id="stCard"></div></div>
+
+<div id="netModal" aria-hidden="true">
+  <div class="gp-card">
+    <h2>Сетевая игра</h2>
+    <p class="gp-lead">Прямое соединение по WebRTC: без сервера. Обменяйтесь двумя короткими кодами любым мессенджером.</p>
+    <div class="gp-row"><span class="gp-label">Статус</span><b id="netStatus">○ Не подключено</b></div>
+    <div class="gp-btns net-row">
+      <button id="netHost" type="button">🎮 Создать приглашение</button>
+      <button id="netJoin" type="button">🔗 Присоединиться</button>
+    </div>
+    <div id="netSteps"></div>
+    <div class="gp-btns">
+      <button id="netClose" type="button">Готово</button>
+    </div>
+  </div>
+</div>
+<div id="help">
+  <b>Mode 2</b> · Левый стик: газ (↑/↓) и рыскание (←/→) · Правый стик: тангаж (↑/↓) и крен (←/→)<br>
+  Клавиши: <b>W/A/S/D</b> — газ и рыскание · <b>стрелки</b> — тангаж и крен · <b>C</b> — камера · <b>R</b> — заново · <b>N</b> — след. уровень · <b>F</b> — режим Angle/Acro · <b>M</b> — модель и оборудование · <b>1…9</b> — выбор уровня<br>
+  Пульт: подключите USB-пульт (BetaFPV и др.) и нажмите <b>🎮 Настройка пульта</b> для калибровки осей.
+  <div class="hint">Активное кольцо подсвечено пульсирующим жёлтым; к нему указывает голубая стрелка. Стики тянутся мышью или пальцем (мультитач). Режим камеры 4 «FPV» — вид от первого лица с авиагоризонтом и HUD-разметкой.</div>
+</div>
+
+<div class="stick" id="stickLeft">
+  <div class="axis h"></div><div class="axis v"></div>
+  <div class="knob"></div>
+  <div class="cap">ГАЗ · РЫСКАНИЕ</div>
+</div>
+<div class="stick" id="stickRight">
+  <div class="axis h"></div><div class="axis v"></div>
+  <div class="knob"></div>
+  <div class="cap">ТАНГАЖ · КРЕН</div>
+</div>
+
+<div id="overlay"></div>
+
+
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

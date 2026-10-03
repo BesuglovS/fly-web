@@ -2727,8 +2727,9 @@ makePanelCollapsible(document.getElementById('hud'),      document.querySelector
 makePanelCollapsible(document.getElementById('levelbar'), document.getElementById('lvName'));
 
 /* --- панели без своего заголовка: добавляем шапку с названием и кнопкой ---
-   (правый блок с кнопкой «УРОВНИ» и нижняя панель подсказок) */
-function makeHeaderPanel(panelEl, titleText){
+   (правый блок с кнопкой «УРОВНИ» и нижняя панель подсказок).
+   startCollapsed — свернуть панель сразу (по умолчанию). */
+function makeHeaderPanel(panelEl, titleText, startCollapsed){
   if(!panelEl || panelEl.querySelector(':scope > .panel-head')) return;
   const body = document.createElement('div');
   body.className = 'panel-body';
@@ -2755,9 +2756,15 @@ function makeHeaderPanel(panelEl, titleText){
     btn.title = col ? 'Развернуть панель' : 'Свернуть панель';
     btn.setAttribute('aria-label', btn.title);
   });
+  if(startCollapsed){
+    panelEl.classList.add('collapsed');
+    btn.textContent = '▸';
+    btn.title = 'Развернуть панель';
+    btn.setAttribute('aria-label', btn.title);
+  }
 }
-makeHeaderPanel(document.getElementById('legend'), 'УПРАВЛЕНИЕ');
-makeHeaderPanel(document.getElementById('help'),   'ПОДСКАЗКИ');
+makeHeaderPanel(document.getElementById('legend'), 'УПРАВЛЕНИЕ', !isMobile);
+makeHeaderPanel(document.getElementById('help'),   'ПОДСКАЗКИ', true);
 
 /* ============================================================
    Полный экран (кнопка ⛶) и адаптивное качество на слабых устройствах

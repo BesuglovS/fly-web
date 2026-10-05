@@ -281,13 +281,15 @@ function makeDroneMesh(m){
   );
   lens.rotation.x = Math.PI/2; lens.position.set(0,-0.16*s,0.77*s); g.add(lens);
 
-  /* моторы: 4 или 6, по кругу; передние — красные, задние — белые */
+  /* моторы: 4 (X-схема: два спереди, два сзади) или 6, по кругу;
+     передние — красные, задние — белые */
   const hexa = (m.id === 'hexa');
   const armLen = (hexa ? 0.78 : 0.62) * s;
   const cnt = hexa ? 6 : 4;
   const conf = [];
   for(let i=0;i<cnt;i++){
-    const a = i * (Math.PI*2/cnt);
+    /* у квадрокоптера сдвигаем на полшага — моторы встают по диагоналям */
+    const a = (i + (hexa ? 0 : 0.5)) * (Math.PI*2/cnt);
     const x = Math.sin(a)*armLen, z = Math.cos(a)*armLen;
     conf.push({ pos:new THREE.Vector3(x,0.12*s,z), front: z>0, dir: (i%2===0?1:-1) });
   }

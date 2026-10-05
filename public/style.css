@@ -134,6 +134,19 @@
     font-size:12px;font-weight:700;cursor:pointer;letter-spacing:.3px}
   #modeBtn:hover{background:rgba(59,157,255,.28)}
 
+  /* ---------- Авторизация (auth-web SSO) ---------- */
+  .auth-box{display:flex;align-items:center;gap:8px;margin-top:8px;padding-top:8px;
+    border-top:1px solid rgba(255,255,255,.12);font-size:12px}
+  .auth-name{color:#cfe6ff;font-weight:600;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap;max-width:150px}
+  .auth-link{color:#9fd0ff;text-decoration:none;border-bottom:1px dashed rgba(159,208,255,.5);
+    cursor:pointer;white-space:nowrap}
+  .auth-link:hover{color:#cfe6ff;border-bottom-color:#cfe6ff}
+  .auth-hidden{display:none!important}
+  .auth-unavailable .auth-name{color:#ffb4a8}
+  a.st-mode{display:block;text-decoration:none}
+  a.st-mode b{display:block;color:#9fd0ff;font-size:13px;margin-bottom:2px}
+
   #gpModal{position:fixed;inset:0;z-index:40;display:none;align-items:center;justify-content:center;
     background:rgba(4,8,13,.66);backdrop-filter:blur(4px)}
   #gpModal.show{display:flex}
@@ -172,6 +185,14 @@
   #gpModal button.primary{background:#2f8fff;border-color:#2f8fff;color:#fff}
   #gpModal button.primary:hover{background:#4aa0ff}
   #gpModal .gp-btns button{width:auto}
+
+  /* ---------- WebHID (прямое подключение) ---------- */
+  #gpModal .gp-webhid{margin:14px 0 4px;padding:12px 14px;border:1px solid rgba(159,208,255,.28);
+    border-radius:12px;background:rgba(159,208,255,.06)}
+  #gpModal .gp-webhid h3{margin:0 0 4px}
+  #gpModal .gp-webhid .gp-hint{margin:0 0 10px}
+  #webhidStatus.ok{color:#39d353}
+  #gpModal .gp-webhid-btns{justify-content:flex-start;margin-top:2px}
 
   /* ---------- Config modal (модель и оборудование) ---------- */
   #cfgModal{position:fixed;inset:0;z-index:40;display:none;align-items:center;justify-content:center;
@@ -243,14 +264,46 @@
     border-radius:16px;padding:20px 22px;width:min(560px,94vw);max-height:90vh;overflow:auto;
     box-shadow:0 20px 60px rgba(0,0,0,.6)}
   #netModal h2{margin:0 0 6px;font-size:20px;color:#9fd0ff}
-  #netModal textarea{width:100%;min-height:64px;background:#0e1622;color:#cfe6ff;
-    border:1px solid rgba(255,255,255,.25);border-radius:8px;padding:7px;font-size:12px;font-family:inherit}
   .net-row{justify-content:flex-start;margin:12px 0}
   .net-row button{background:rgba(159,208,255,.18);border:1px solid rgba(159,208,255,.55);
     color:#eaf6ff;border-radius:10px;padding:9px 15px;font-size:13px;font-weight:600;cursor:pointer}
-  .net-row button:hover{background:rgba(159,208,255,.3)}
+  .net-row button:hover:not(:disabled){background:rgba(159,208,255,.3)}
+  .net-row button:disabled{opacity:.45;cursor:default}
+  .net-row button.net-ghost{background:transparent;border-color:rgba(255,255,255,.28);color:#c9d6e6}
+  .net-row button.net-ghost:hover:not(:disabled){background:rgba(255,255,255,.08)}
   .net-step{margin:10px 0 4px;font-size:12px;color:#cfe0f5;line-height:1.5}
-  .net-code{width:100%;margin:6px 0 10px;display:block}
+  .net-players{display:flex;flex-direction:column;gap:6px;margin:6px 0 4px}
+  .net-player{display:flex;justify-content:space-between;gap:12px;align-items:center;
+    background:rgba(159,208,255,.08);border:1px solid rgba(159,208,255,.22);border-radius:9px;
+    padding:8px 12px;font-size:13px;color:#eaf6ff}
+  .net-player em{font-style:normal;font-size:11px;color:#8fb8e0}
+  .net-rooms{display:flex;flex-direction:column;gap:8px;margin:6px 0}
+  .net-room{display:flex;justify-content:space-between;gap:12px;align-items:center;
+    background:rgba(159,208,255,.06);border:1px solid rgba(159,208,255,.22);border-radius:10px;padding:9px 12px}
+  .net-room-main{display:flex;flex-direction:column;gap:2px;min-width:0}
+  .net-room-main b{color:#eaf6ff;font-size:13px}
+  .net-room-main small{color:#8fb8e0;font-size:11px}
+  .net-room-side{display:flex;align-items:center;gap:8px;flex:0 0 auto}
+  .net-room-side span{color:#9fd0ff;font-size:12px}
+  .net-room-side button{background:rgba(57,211,83,.16);border:1px solid rgba(57,211,83,.5);
+    color:#d8ffe4;border-radius:8px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer}
+  .net-room-side button:hover:not(:disabled){background:rgba(57,211,83,.28)}
+  .net-room-side button:disabled{opacity:.4;cursor:default}
+  .net-h3{margin:12px 0 6px;font-size:12px;color:#9fd0ff;letter-spacing:.3px}
+  .net-maps{display:flex;flex-wrap:wrap;gap:8px}
+  .net-maps button{background:rgba(159,208,255,.12);border:1px solid rgba(159,208,255,.4);
+    color:#dcebff;border-radius:8px;padding:7px 12px;font-size:12.5px;font-weight:600;cursor:pointer}
+  .net-maps button:hover{background:rgba(159,208,255,.24)}
+  .net-maps button.sel{background:rgba(57,211,83,.22);border-color:rgba(57,211,83,.7);color:#d8ffe4}
+  .net-name{background:#0e1622;color:#eaf6ff;border:1px solid rgba(159,208,255,.4);
+    border-radius:7px;padding:4px 8px;font-size:12.5px;font-family:inherit;width:150px}
+  .net-addr{background:#0e1622;color:#eaf6ff;border:1px solid rgba(159,208,255,.4);
+    border-radius:7px;padding:4px 8px;font-size:12.5px;font-family:inherit;width:180px}
+  .net-mini{background:rgba(159,208,255,.16);border:1px solid rgba(159,208,255,.5);
+    color:#eaf6ff;border-radius:7px;padding:4px 10px;font-size:12px;font-weight:600;cursor:pointer}
+  .net-mini:hover{background:rgba(159,208,255,.3)}
+  .net-wait{color:#ffd23f}
+  .net-ok{color:#39d353}
   #gpRescan{display:block;width:100%;margin:10px 0 12px;
     background:rgba(255,210,63,.14);border:1px solid rgba(255,210,63,.5);color:#ffe9a8}
 

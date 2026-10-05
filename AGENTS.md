@@ -26,8 +26,20 @@
 - **FPV-вид** (4-й режим камеры): камера в носу, FOV 105°, canvas-оверлей:
   авиагоризонт (лестница тангажа), шкала крена-дуга, компас-лента,
   SPD/ALT/вариометр, «НИЗКАЯ ВЫСОТА». Рисуется ТОЛЬКО в режиме FPV.
-- **Сетевая игра**: WebRTC DataChannel без сервера (обмен кодами offer/answer),
-  синхронизация аппаратов 20 Гц (позиция + кватернион), аппарат соперника — клон меша.
+- **Сетевая игра**: несколько комнат одновременно, mesh «каждый с каждым».
+  Размер комнаты выбирает хост (`rooms.max`: 2/4/6/8, потолок 8 — для игры в
+  локальной сети). В окне — список открытых игр и подключение к нужной (или
+  «Быстрая игра»); первый участник — хост: выбирает карту (Луг/Город/Каньон),
+  режим (Angle/Acro) и размер и жмёт «Начать игру» — выбор и старт транслируются
+  остальным. Сигналинг — HTTP-поллинг PHP-бэкенда (`server/` → `/api/signal/*`,
+  вне webroot), авторизация по куке `auth_session`. После установки DataChannel
+  трафик P2P; синхронизация 20 Гц (позиция + кватернион), аппарат соперника —
+  клон меша с подписью имени (sprite/CanvasTexture). Ручных кодов нет.
+- **Авторизация auth-web (SSO, опционально)**: клиентский `fetch` к
+  `auth.nayanovaacademy.ru/api/check.php` (`credentials:'include'`, читает общую
+  куку `auth_session`), вход/выход — навигацией на портал с `?redirect=`.
+  Анонимный вход разрешён: `renderAuth()` (#authBox в панели «Управление» и
+  `#stAuthBtn` на стартовом экране) только показывают имя и кнопки.
 - **Мобильные**: крупнее тач-зона, авто-даунскейл разрешение (замер каждые 3 с),
   antialias выключен, тени 1024, подсказка о повороте (портрет), fullscreen.
   Интерфейс скрыт: остаётся 3D + стики + маленькая «☰» (правый верх):
@@ -36,7 +48,7 @@
 
 ## ⚠ Критические правила
 
-1. **Правки только в `public/`** — там весь контент:
+1. **Правки в `public/` (страница) и `server/` (PHP-сигналинг) — контента больше нигде нет:**
    - `index.html` — разметка UI (HUD `#hud`, строка уровня `#levelbar`,
      легенда `#legend` + кнопки, старт-экран `#startScreen` > `#stCard`,
      модалки `#gpModal`, `#cfgModal`, `#netModal`, `#overlay`, `#fpvHud`,
@@ -45,10 +57,19 @@
    - `app.js` — вся логика (см. «Конвенции» ниже);
    - `three.module.min.js` — локальная копия three.js r160 (670 КБ);
      не редактировать, не заменять на CDN.
+   - `api/signal/*.php` — тонкие фронт-контроллеры, зовущие `../app` (см. `_bootstrap.php`).
+   - `server/` (снаружи `public/`) — PHP-код сигналинга + `AuthClient`; деплоится в `../app`.
 2. **Никаких inline `<style>`/`<script>`, importmap и внешних CDN** —
    CSP сервера строгая (`script-src/style-src 'self'`); inline-код заблокируется
    и сломает страницу в проде. three.js импортируется относительным путём
    `./three.module.min.js`. Раньше стоял importmap/unpkg — убран именно поэтому.
+   **Единственное внешнее подключение — auth-web**: CSP `connect-src` в nginx
+   содержит `https://auth.nayanovaacademy.ru` (security-набор и CSP дублируются
+   в КАЖДОМ location, включая PHP-location `/api/`). Same-origin обращения к
+   `/api/signal/*` покрываются `connect-src 'self'` — CSP из-за бэкенда не меняется.
+   Парный гейт — `ALLOWED_ORIGINS` в `auth-web/config.php`:
+   `https://fly.nayanovaacademy.ru` обязан там быть, иначе CORS не отдаст
+   ответ `check.php` и вход «молча» не сработает. Анонимный вход не блокируем.
 3. **Кэш**: файлы грузятся по именам БЕЗ content-hash (`?v=`) — любое долгое
    caching недопустимо; всё `no-cache, must-revalidate` (в nginx-конфиге есть
    и `.css|.js`, и `.html` location). НЕ переносите файлы под immutable-кэш —
@@ -64,17 +85,40 @@
    (владелец `deploy:www-data`; при добавлении сайта с новым webroot не забудьте
    разово `mkdir -p + chown deploy:www-data`, у юзера `deploy` нет права создавать
    папки в `/var/www`).
+6. **TURN/NAT**: игроки соединяются через собственный coturn
+   (`fly.nayanovaacademy.ru:3478`, UDP/TCP) — STUN-only недостаточно при общем/
+   симметричном NAT. Креденшелы временные (REST-авторизация, `use-auth-secret`);
+   `static-auth-secret` хранится в `data/turn_secret` (`www-data` 640), клиенту НЕ
+   отдаётся — только `ice.php` считает HMAC-SHA1. Не публиковать секрет и не
+   отключать `denied-peer-ip` для приватных сетей (иначе открытый relay).
+7. **Сигналинг (`server/`, `/api/signal/*`)** — серверный код, доверять только ему:
+   авторизацию проверяем сервер-к-серверу через `AuthClient` (не принимаем `user_id`
+   от клиента); только POST + `Content-Type: application/json` (отсекает CSRF-form);
+   лимиты: ≤4 участников, SDP ≤ 32 КБ, rate-limit поллинга; SQLite — prepared
+   statements, только в `../data` (вне webroot). В nginx исполняется только
+   `/api/*.php`, любой другой `.php` → 404. Не ослаблять.
 
 ## 🏗 Структура
 
 ```
-public/                 # вся страница (см. правило 1)
+public/                 # webroot (см. правило 1); api/signal/*.php — фронт-контроллеры
+relay/                  # LAN-релей (Node+ws): статика + WebSocket /ws, звезда O(N).
+                        # НЕ деплоится на прод — запускается на машине в локальной сети.
+server/                 # PHP-бэкенд сигналинга (деплой → ../app, ВНЕ webroot):
+                        # auth-client/AuthClient.php, lib/Db.php+http.php,
+                        # api/rooms+create+join+find+exchange+ice+leave.php
 fly.nayanovaacademy.ru  # nginx-конфиг: 80→301; wildcard cert.pem/key.pem;
+                        # location ~ ^/api/.*\.php$ → php8.1-fpm; прочий .php → 404;
                         # security-набор продублирован в каждом location с add_header
-deploy.ps1              # см. «Команды»
+deploy.ps1              # public/ → webroot, server/ → app/; см. «Команды»
 .env / .env.example     # DEPLOY_SSH_HOST/PORT/USER/KEY/DEPLOY_REMOTE_PATH
 AGENTS.md               # этот файл
 ```
+
+Разовая настройка на сервере (root, один раз): каталоги
+`/var/www/fly.nayanovaacademy.ru/app` и `.../data` рядом с `public/`, владелец
+`deploy:www-data`; `data/` — на запись PHP-FPM (`signaling.db`, переживает деплой).
+У пользователя `deploy` нет прав создавать каталоги в `/var/www`.
 
 ## 🛠 Команды (Windows PowerShell)
 
@@ -111,7 +155,11 @@ AGENTS.md               # этот файл
    (Chrome скрывает устройства до первого действия!); автовыбор «живого» устройства
    + ручной селектор `#gpDevice`; оси `yaw/throttle/pitch/roll`, инверсия,
    мёртвая зона; кнопки cam/reset/next/arm; конфиг в localStorage
-   `pioneer-web-fly-gamepad`.
+   `pioneer-web-fly-gamepad`. **WebHID-фолбэк** (`webhid`): для пультов,
+   которые `joy.cpl` видит, а Gamepad API нет (нестандартный дескриптор,
+   напр. BetaFPV) — кнопка в `#gpModal`, `navigator.hid.requestDevice({filters:[]})`,
+   разбор `device.collections`, синтетический пэд `WEBHID_PAD_INDEX=1000` вливается
+   в тот же `gamepad.axes/buttons` (калибровка общая); авто-реконнект через `getDevices()`.
 5. **Уровни**: `LEVELS` (15 шт.); ворота `ring|hover|heading|altitude|land`;
    ограничения `constraints.{maxAlt,maxSpeed,maxRoll}` / `timeLimit` / `emergency`;
    звёзды по времени; подсказка — голубой стрелкой-указателем;
@@ -119,9 +167,33 @@ AGENTS.md               # этот файл
 6. **HUD**: телеметрия в `#hud` (обновление DOM ежекадрово — дешёво); строка уровня
    `#levelbar` (objective, лимит времени, предупреждения); FPV-оверлей —
    `drawFpvHud()` (canvas 2d поверх WebGL, только при `camMode===3`).
-7. **Сеть**: `net`-объект; роль host/guest; DataChannel `fly` (ordered:false);
-   протокол JSON `{t:'hello'|'st', p:[x,y,z], q:[x,y,z,w]}`; peer-меш — клон
-   мини-2, интерполяция lerp/slerp, 50 мс тики приёма/отправки; без соединения скрыт.
+7. **Сеть**: `netRoom` — игр несколько, размер комнаты `rooms.max` (2/4/6/8,
+   потолок 8) задаёт хост через `control.max` (нельзя ниже числа текущих
+   участников). **Больше `FLY_PUBLIC_MAX=4` — только администратор**: сервер
+   клампит (`flyClampMaxForUser`), а `maxOptions`/`maxHard` в снимке фильтруются
+   по `is_admin`; UI показывает только разрешённые размеры. В LAN-релее то же
+   через `ADMIN_KEY` (админ открывает `?lan&admin=<ключ>`). `peers: Map<userId, peer>`
+   (mesh); каждая пара — свой `RTCPeerConnection` и DataChannel `fly`
+   (ordered:false); инициатор пары — меньший `user_id` (один offer на пару).
+   Сигналинг — `POST /api/signal/*`: `rooms`/`create`/`join`/`find` (лобби и вход),
+   `exchange` (SDP + heartbeat + состав + host-`control`), `ice` (STUN+TURN),
+   `leave`. Поллинг ~2 с + быстрый `netKick`; протокол
+   `{t:'hello'|'st', p:[x,y,z], q:[x,y,z,w]}`, интерполяция lerp/slerp, 50 мс тики;
+   подписи имён — `THREE.Sprite` поверх клонов мини-2. Хост = `room.host_user_id`
+   (первый; при уходе переназначается): карта (`CFG.map`) и режим (`setFlightMode`)
+   применяются через `applyNetGame()` — у хоста сразу, у гостей при `started`;
+   когда `started` впервые приходит, окно `#netModal` закрывается само.    ICE-серверы
+   берутся из `ice.php` (`netLoadIce()`) до создания соединений; `netPeerWatchdog`
+   пересоздаёт связь у инициатора, если канал не открылся за ~7 с. Карта комнаты
+   хранится на сервере. Комната живёт и для одного: можно летать одному.
+   **LAN-режим** (`NET_RELAY`, авто на `http:` или `?lan`/`?relay=host`): транспорт —
+   один WebSocket к `relay/` (звезда, O(N)), без auth-web/TURN; заполняются те же
+   `netRoom`/`peers`, поэтому UI/`applyNetGame` общие, а `ensurePeer` в этом режиме
+   не создаёт `RTCPeerConnection` (борт сразу виден).
+   `players.slot` (0..3, наименьший свободный) — персональная точка спавна
+   (`NET_SPAWNS[slot]`): при старте борта стоят рядом, а не в одной точке.
+   `loadLevel()` сбрасывает дрон в `lv.start` (ноль), поэтому после него
+   `netPlaceLocalAtSpawn()` переставляет местный борт в свой слот.
 8. **Persist ключи**: `pioneer-web-fly-cfg` (сборка), `pioneer-web-fly-mode`
    (Angle/Acro), `pioneer-web-fly-gamepad` (расклад пульта).
 
@@ -137,10 +209,21 @@ AGENTS.md               # этот файл
 
 ## 🧪 Проверки (вручную; тестов и CI нет)
 
-- Локально: `node --check public\app.js` (синтаксис), осмотр `style.css`-скобки.
+- Локально: `node --check public\app.js` (синтаксис), осмотр `style.css`-скобки,
+  `php -l` по всем файлам `server/` и `public/api/`.
 - Как минимум после каждого деплоя: `https://fly.nayanovaacademy.ru/` → 200,
   `Cache-Control: no-cache` на HTML и на `app.js` (иначе браузеры залипнут),
   `/app.js`, `/style.css`, `/three.module.min.js` → 200 c правильными MIME.
+- Бэкенд: `POST /api/signal/*` (`rooms/create/join/find/exchange/ice/leave`)
+  анонимно → `401`; direct-запрос любого другого `.php` → `404`. С валидной кукой:
+  хост создаёт игру, 1–4 участника подключаются, хост меняет карту/режим и
+  стартует — состав, имена и карта приходят всем, окно закрывается само; выход
+  хоста переназначает хоста.
+- TURN: `systemctl is-active coturn` → active, порт `3478` слушается, relay из
+  `49160-49200` выделяется. Проверка авторизации: сгенерировать креденшел
+  (`username = now+3600:uid`, `credential = base64(hmac-sha1(secret, username))`)
+  и прогнать `turnutils_uclient -u <user> -w <cred> 127.0.0.1` — должно дойти до
+  channel bind (`403 Forbidden IP` на loopback-пир — норма, значит auth прошёл).
 - Регрессия-«горизонт»: линии горизонта FPV-HUD НЕ дублируются и не зеркалят
   (позади камеры — не рисуем).
 - Регрессия-мобильный: `#help`/`#hud`/`#levelbar` скрыты на coarse; «☰» открывает

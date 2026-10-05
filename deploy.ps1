@@ -65,20 +65,63 @@ if ($identityFile -and (Test-Path $identityFile)) {
 }
 
 # ─── 2. Deploy files via tar + ssh ───
+# Отправляет локальный tar в stdin ssh-команды (безопасно для бинарных данных).
+function Send-TarToRemote {
+  param([string]$Targz, [string]$SshArgs)
+  $bytes = [System.IO.File]::ReadAllBytes($Targz)
+  $psi = New-Object System.Diagnostics.ProcessStartInfo('ssh', $SshArgs)
+  $psi.RedirectStandardInput = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  $proc = [System.Diagnostics.Process]::Start($psi)
+
+  try {
+    $proc.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
+    $proc.StandardInput.Close()
+  } catch [System.IO.IOException] {
+    $stderr = $proc.StandardError.ReadToEnd()
+    $proc.WaitForExit()
+    Write-Host "  Deploy failed: $($_.Exception.Message)" -ForegroundColor Red
+    if ($stderr) { Write-Host "  SSH: $stderr" -ForegroundColor Red }
+    exit 1
+  }
+
+  $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+  $stderrTask = $proc.StandardError.ReadToEndAsync()
+  $proc.WaitForExit()
+  $stdout = $stdoutTask.Result
+  $stderr = $stderrTask.Result
+
+  if ($proc.ExitCode -ne 0) {
+    Write-Host "  Deploy failed (exit code: $($proc.ExitCode))" -ForegroundColor Red
+    if ($stdout) { Write-Host "  SSH stdout: $stdout" -ForegroundColor Red }
+    if ($stderr) { Write-Host "  SSH stderr: $stderr" -ForegroundColor Red }
+    exit 1
+  }
+}
+
+function Build-SshArgs {
+  param([string]$RemoteScript)
+  $s = ""
+  if ($sshPort -ne '22') { $s += "-P $sshPort " }
+  if ($identityFile) { $s += "-i `"$identityFile`" " }
+  $s += "$remote `"$RemoteScript`""
+  return $s
+}
+
 $srcPath = Join-Path $PSScriptRoot 'public'
 if (-not (Test-Path $srcPath)) {
   Write-Host "ERROR: public/ not found." -ForegroundColor Red
   exit 1
 }
 
-$sshArgStr = ""
-if ($sshPort -ne '22') { $sshArgStr += "-P $sshPort " }
-if ($identityFile) { $sshArgStr += "-i `"$identityFile`" " }
 # Путь очищается целиком, поэтому допускаем только webroot проекта (guard выше).
 $remoteScript = "rm -rf `"$remotePath`"/* `"$remotePath`"/.[!.]* 2>/dev/null; " +
   "mkdir -p `"$remotePath`"; " +
   "tar -xzf - -C `"$remotePath`""
-$sshArgStr += "$remote `"$remoteScript`""
+$sshArgStr = Build-SshArgs $remoteScript
 
 Write-Host "`n==> Deploying files to ${remote}:${remotePath} ..." -ForegroundColor Cyan
 
@@ -95,41 +138,56 @@ if ($DryRun) {
       exit 1
     }
 
-    $bytes = [System.IO.File]::ReadAllBytes($targz)
-
-    $psi = New-Object System.Diagnostics.ProcessStartInfo('ssh', $sshArgStr)
-    $psi.RedirectStandardInput = $true
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow = $true
-    $proc = [System.Diagnostics.Process]::Start($psi)
-
-    try {
-      $proc.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
-      $proc.StandardInput.Close()
-    } catch [System.IO.IOException] {
-      $stderr = $proc.StandardError.ReadToEnd()
-      $proc.WaitForExit()
-      Write-Host "  Deploy failed: $($_.Exception.Message)" -ForegroundColor Red
-      if ($stderr) { Write-Host "  SSH: $stderr" -ForegroundColor Red }
-      exit 1
-    }
-
-    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
-    $stderrTask = $proc.StandardError.ReadToEndAsync()
-    $proc.WaitForExit()
-    $stdout = $stdoutTask.Result
-    $stderr = $stderrTask.Result
-
-    if ($proc.ExitCode -ne 0) {
-      Write-Host "  Deploy failed (exit code: $($proc.ExitCode))" -ForegroundColor Red
-      if ($stdout) { Write-Host "  SSH stdout: $stdout" -ForegroundColor Red }
-      if ($stderr) { Write-Host "  SSH stderr: $stderr" -ForegroundColor Red }
-      exit 1
-    }
+    Send-TarToRemote -Targz $targz -SshArgs $sshArgStr
   } finally {
     Remove-Item $targz -ErrorAction SilentlyContinue
+  }
+
+  Write-Host "  Done." -ForegroundColor Green
+}
+
+# ─── 2b. Deploy signaling backend (server/ -> ../app) ───
+# Код сигналинга лежит ВНЕ webroot (../app), БД — в ../data (её переживает
+# деплой, как сохранённая БД auth-web). Каталоги на проде создаются один раз
+# root'ом и принадлежат deploy/www-data — у пользователя deploy нет прав
+# создавать каталоги в /var/www.
+$serverPath = Join-Path $PSScriptRoot 'server'
+$projectRoot = $remotePath -replace '/public$',''
+$appPath  = "$projectRoot/app"
+$dataPath = "$projectRoot/data"
+
+if (-not $appPath.EndsWith('/app')) {
+  Write-Host "ERROR: cannot derive app path from $remotePath" -ForegroundColor Red
+  exit 1
+}
+
+if (-not (Test-Path $serverPath)) {
+  Write-Host "`n==> No server/ directory, skipping backend deploy." -ForegroundColor Yellow
+} elseif ($DryRun) {
+  Write-Host "  [DryRun] tar server/ | ssh -> $appPath (ensure $dataPath)" -ForegroundColor Yellow
+} else {
+  Write-Host "`n==> Deploying signaling backend to ${remote}:${appPath} ..." -ForegroundColor Cyan
+
+  # data/ доступен PHP-FPM (www-data): владелец/права чинятся best-effort
+  # (сработает при root или разрешённом `sudo -n`, иначе — разовая настройка).
+  $serverScript = "rm -rf `"$appPath`"/* 2>/dev/null; " +
+    "mkdir -p `"$appPath`" `"$dataPath`" 2>/dev/null; " +
+    "tar -xzf - -C `"$appPath`"; " +
+    "(chown -R www-data:www-data `"$dataPath`" 2>/dev/null || sudo -n chown -R www-data:www-data `"$dataPath`" 2>/dev/null || true); " +
+    "(chmod 775 `"$dataPath`" 2>/dev/null || sudo -n chmod 775 `"$dataPath`" 2>/dev/null || true)"
+  $sshArgStr2 = Build-SshArgs $serverScript
+
+  $targz2 = Join-Path $env:TEMP "deploy-fly-server-$(Get-Random).tar.gz"
+  try {
+    & tar -czf $targz2 -C $serverPath .
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host "  Archive creation failed" -ForegroundColor Red
+      exit 1
+    }
+
+    Send-TarToRemote -Targz $targz2 -SshArgs $sshArgStr2
+  } finally {
+    Remove-Item $targz2 -ErrorAction SilentlyContinue
   }
 
   Write-Host "  Done." -ForegroundColor Green

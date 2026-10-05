@@ -24,6 +24,79 @@ let renderScale = isMobile ? 1.25 : 1.5;
 let qFrames = 0, qTime = 0;
 
 /* ============================================================
+   Авторизация через портал auth-web (SSO)
+   Кука auth_session домена .nayanovaacademy.ru валидируется браузерным
+   запросом к /api/check.php (CORS+credentials). Вход/выход — навигацией
+   на портал с редиректом обратно. Анонимный вход разрешён: симулятор
+   полностью доступен и без авторизации.
+   ============================================================ */
+const AUTH_BASE   = 'https://auth.nayanovaacademy.ru';
+const AUTH_CHECK  = AUTH_BASE + '/api/check.php';
+let authUser = null;         // {id,login,display_name,is_admin} | null
+let authUnavailable = false; // true — auth-web не ответил/ошибка сети
+
+function authLoginUrl(){
+  return AUTH_BASE + '/index.php?page=login&redirect=' + encodeURIComponent(location.href);
+}
+function authLogoutUrl(){
+  return AUTH_BASE + '/api/logout.php?redirect=' + encodeURIComponent(location.href);
+}
+
+/* Проверка сессии. Возвращает профиль пользователя либо null. */
+async function checkAuth(){
+  try{
+    const res = await fetch(AUTH_CHECK, { credentials:'include', headers:{ 'Accept':'application/json' } });
+    if(!res.ok){ authUnavailable = true; return null; }
+    const data = await res.json();
+    if(data && data.authenticated && data.user) return data.user;
+    return null;
+  }catch(_){
+    authUnavailable = true;
+    return null;
+  }
+}
+
+/* Отрисовка состояния входа в панели «Управление» и на стартовом экране. */
+function renderAuth(){
+  const nameEl   = document.getElementById('authName');
+  const loginEl  = document.getElementById('authLogin');
+  const logoutEl = document.getElementById('authLogout');
+  const boxEl    = document.getElementById('authBox');
+
+  if(authUser){
+    if(nameEl) nameEl.textContent = authUser.display_name || authUser.login || 'Пользователь';
+    if(loginEl) loginEl.classList.add('auth-hidden');
+    if(logoutEl){ logoutEl.classList.remove('auth-hidden'); logoutEl.href = authLogoutUrl(); }
+  }else{
+    if(nameEl) nameEl.textContent = authUnavailable ? 'Портал входа недоступен' : 'Гость';
+    if(loginEl){ loginEl.classList.remove('auth-hidden'); loginEl.href = authLoginUrl(); }
+    if(logoutEl) logoutEl.classList.add('auth-hidden');
+  }
+  if(boxEl) boxEl.classList.toggle('auth-unavailable', authUnavailable && !authUser);
+
+  const stBtn = document.getElementById('stAuthBtn');
+  if(stBtn){
+    if(authUser){
+      stBtn.textContent = '👤 ' + (authUser.display_name || authUser.login) + ' — выйти';
+      stBtn.href = authLogoutUrl();
+    }else if(authUnavailable){
+      stBtn.textContent = '⚠ Портал входа временно недоступен';
+      stBtn.href = AUTH_BASE;
+    }else{
+      stBtn.textContent = '🔑 Войти через портал';
+      stBtn.href = authLoginUrl();
+    }
+  }
+}
+
+async function initAuth(){
+  authUser = await checkAuth();
+  renderAuth();
+}
+renderAuth();   // немедленно проставляем ссылки входа/название «Гость»
+initAuth();     // фоновая проверка сессии — не блокирует запуск симулятора
+
+/* ============================================================
    Рендерер / сцена / камера
    ============================================================ */
 const app = document.getElementById('app');
@@ -147,9 +220,9 @@ scene.add(levelRoot);
    ============================================================ */
 
 const DRONE_MODELS = [
-  { id:'mini2',  name:'Пионер Мини 2', desc:'Образовательный: спокойный и послушный.',
+  { id:'mini2',  name:'Мини', desc:'Образовательный: спокойный и послушный.',
     scale:1.0,  bodyColor:0x2c3138, thrustMul:1.0,  speedMul:1.0,  climbMul:1.0,  dragMul:1.0,  baseCap:3500 },
-  { id:'base',   name:'Пионер Базовый', desc:'Платформа-конструктор: устойчивый, тяговитый.',
+  { id:'base',   name:'Базовый', desc:'Платформа-конструктор: устойчивый, тяговитый.',
     scale:1.22, bodyColor:0x252d38, thrustMul:1.25, speedMul:0.82, climbMul:0.92, dragMul:1.12, baseCap:5200 },
   { id:'racing', name:'FPV Racing', desc:'Гоночный: резкий отклик, максимальная скорость.',
     scale:0.85, bodyColor:0x1a1e26, thrustMul:1.5,  speedMul:1.55, climbMul:1.4,  dragMul:0.55, baseCap:1300 },
@@ -553,6 +626,236 @@ const gamepad = {
 let gpCalOpen = false;
 let gpAssigning = null;   // канал, ожидающий назначения оси
 
+/* ============================================================
+   WebHID — прямое чтение HID-отчётов в обход Gamepad API.
+   Нужен для пультов (BetaFPV и др.), которые Windows видит
+   (joy.cpl), но Chrome в gamepad-список не добавляет из-за
+   нестандартного дескриптора. Пульт подключается кнопкой в
+   окне «Настройка пульта» и далее используется как обычное
+   устройство — калибровка осей и кнопок работает так же.
+   ============================================================ */
+const WEBHID_PAD_INDEX = 1000;   // синтетический индекс «устройства»
+const HID_AXIS_USAGES = new Set([0x30,0x31,0x32,0x33,0x34,0x35,0x36,0x37,0x38]);
+
+const webhid = {
+  supported: !!(navigator.hid && navigator.hid.addEventListener),
+  device: null,
+  opened: false,
+  id: '',
+  axes: [],
+  buttons: [],
+  layouts: null,      // Map<reportId, layout>
+  moved: false,
+  lastActivity: 0,
+};
+
+function webhidConnected(){ return webhid.opened && !!webhid.device; }
+
+/* Отдаёт WebHID-пульт в том же виде, что и Gamepad из навигатора. */
+function webhidPseudoPad(){
+  if(!webhidConnected()) return null;
+  return {
+    index: WEBHID_PAD_INDEX,
+    id: webhid.id || 'USB HID пульт',
+    connected: true,
+    axes: webhid.axes,
+    buttons: webhid.buttons,
+    moved: webhid.moved,
+  };
+}
+
+/* Разбираем дескриптор: какие биты каждого отчёта — это оси и кнопки. */
+function webhidBuildLayouts(device){
+  const layouts = new Map();
+  const seen = new Set();
+  const visit = (cols)=>{
+    for(const c of (cols || [])){
+      for(const r of (c.inputReports || [])){
+        if(seen.has(r.reportId)) continue;
+        seen.add(r.reportId);
+        let layout = webhidBuildReport(r, false);
+        /* Нестандартный дескриптор (vendor usage) — пробуем по размеру полей. */
+        if(!layout.axisCount && !layout.buttonCount) layout = webhidBuildReport(r, true);
+        layouts.set(r.reportId, layout);
+      }
+      if(c.children && c.children.length) visit(c.children);
+    }
+  };
+  visit(device.collections || []);
+  return layouts;
+}
+
+function webhidBuildReport(report, loose){
+  let bit = 0, axisIdx = 0, btnIdx = 0;
+  const fields = [];
+  for(const item of (report.items || [])){
+    const size  = item.reportSize  | 0;
+    const count = item.reportCount | 0;
+    if(size <= 0 || count <= 0) continue;
+    if(!item.isConstant){
+      const up = item.usagePage, us = item.usage;
+      const isAxis = loose ? (size > 1) : (up === 0x01 && HID_AXIS_USAGES.has(us));
+      const isBtn  = loose ? (size === 1) : (up === 0x09);
+      if(isAxis){
+        for(let k=0;k<count;k++){
+          fields.push({ t:'a', bit:bit+k*size, size, min:item.logicalMinimum, max:item.logicalMaximum, idx:axisIdx++ });
+        }
+      } else if(isBtn){
+        for(let k=0;k<count;k++){
+          fields.push({ t:'b', bit:bit+k*size, size, min:item.logicalMinimum, max:item.logicalMaximum, idx:btnIdx++ });
+        }
+      }
+    }
+    bit += size * count;
+  }
+  return { fields, totalBits:bit, dataBytes:Math.ceil(bit/8), axisCount:axisIdx, buttonCount:btnIdx };
+}
+
+function webhidReadBits(data, bitOff, size, signed){
+  let v = 0;
+  for(let i=0;i<size;i++){
+    const b = bitOff + i;
+    const byte = b >> 3, bit = b & 7;
+    if(byte < data.byteLength) v += ((data.getUint8(byte) >> bit) & 1) * Math.pow(2, i);
+  }
+  if(signed && size > 1){
+    const half = Math.pow(2, size - 1);
+    if(v >= half) v -= Math.pow(2, size);
+  }
+  return v;
+}
+
+function webhidDecode(reportId, data){
+  const layout = webhid.layouts && webhid.layouts.get(reportId);
+  if(!layout) return;
+  /* Chrome обычно отдаёт data без байта reportId, но подстрахуемся. */
+  const shift = (reportId !== 0 && data.byteLength > layout.dataBytes) ? 8 : 0;
+  if(webhid.axes.length    !== layout.axisCount)   webhid.axes    = new Array(layout.axisCount).fill(0);
+  if(webhid.buttons.length !== layout.buttonCount) webhid.buttons = new Array(layout.buttonCount).fill(0);
+  let changed = false;
+  for(const f of layout.fields){
+    const raw = webhidReadBits(data, f.bit + shift, f.size, f.min < 0);
+    if(f.t === 'a'){
+      const half = (f.max - f.min) / 2 || 1;
+      const val = clamp((raw - (f.min + f.max) / 2) / half, -1, 1);
+      if(Math.abs(val - webhid.axes[f.idx]) > 0.001) changed = true;
+      webhid.axes[f.idx] = val;
+    } else {
+      const val = raw > 0 ? 1 : 0;
+      if(val !== webhid.buttons[f.idx]) changed = true;
+      webhid.buttons[f.idx] = val;
+    }
+  }
+  if(changed){ webhid.moved = true; webhid.lastActivity = performance.now(); }
+}
+
+function webhidOnReport(e){
+  try{ webhidDecode(e.reportId, e.data); }catch(_){}
+}
+
+function webhidOnNativeDisconnect(e){
+  if(e && e.device && e.device === webhid.device) webhidCloseDevice();
+}
+
+async function webhidOpenDevice(device, quiet){
+  if(!webhid.supported || !device) return;
+  if(webhid.device === device && webhid.opened) return;
+  await webhidCloseDevice(true);
+  try{ await device.open(); }
+  catch(_){ if(!quiet) webhidUpdateUi('Нет доступа к устройству'); return; }
+  webhid.device = device;
+  webhid.opened = true;
+  webhid.id = 'HID: ' + (device.productName || ('0x' + device.vendorId.toString(16)));
+  webhid.layouts = webhidBuildLayouts(device);
+  let nAx = 0, nBtn = 0;
+  for(const L of webhid.layouts.values()){ nAx = Math.max(nAx, L.axisCount); nBtn = Math.max(nBtn, L.buttonCount); }
+  webhid.axes = new Array(nAx).fill(0);
+  webhid.buttons = new Array(nBtn).fill(0);
+  webhid.moved = true;
+  device.addEventListener('inputreport', webhidOnReport);
+  gamepad.preferredIndex = WEBHID_PAD_INDEX;
+  webhidUpdateUi();
+  gpPoll();
+  updateGamepadHud();
+  if(gpCalOpen){ buildGpAxesLive(); buildGpButtonSelects(); updateGpCalibrationLive(); }
+  if(!nAx && !nBtn) webhidUpdateUi('Дескриптор не распознан');
+}
+
+async function webhidCloseDevice(silent){
+  const d = webhid.device;
+  if(d){
+    try{ d.removeEventListener('inputreport', webhidOnReport); }catch(_){}
+    try{ await d.close(); }catch(_){}
+  }
+  webhid.device = null;
+  webhid.opened = false;
+  webhid.id = '';
+  webhid.axes = [];
+  webhid.buttons = [];
+  webhid.layouts = null;
+  if(gamepad.preferredIndex === WEBHID_PAD_INDEX) gamepad.preferredIndex = null;
+  if(!silent){
+    webhidUpdateUi();
+    gpPoll();
+    updateGamepadHud();
+    if(gpCalOpen) updateGpCalibrationLive();
+  }
+}
+
+async function webhidRequest(){
+  if(!webhid.supported){ webhidUpdateUi('Браузер не поддерживает WebHID'); return; }
+  let devices = [];
+  try{ devices = await navigator.hid.requestDevice({ filters: [] }) || []; }
+  catch(err){
+    if(err && err.name === 'TypeError'){
+      /* некоторые версии Chrome не принимают пустой filters */
+      try{
+        devices = await navigator.hid.requestDevice({ filters: [
+          { usagePage:0x01, usage:0x04 }, { usagePage:0x01, usage:0x05 },
+          { usagePage:0x01, usage:0x06 }, { usagePage:0x01, usage:0x08 },
+          { vendorId:0x0483 },
+        ]}) || [];
+      }catch(_){ webhidUpdateUi('Выбор отменён'); return; }
+    } else { webhidUpdateUi('Выбор отменён'); return; }
+  }
+  if(!devices.length){ webhidUpdateUi('Устройство не выбрано'); return; }
+  await webhidOpenDevice(devices[0]);
+}
+
+async function webhidAutoReconnect(){
+  if(!webhid.supported) return;
+  try{
+    const granted = await navigator.hid.getDevices();
+    if(granted && granted.length){ await webhidOpenDevice(granted[0], true); webhidUpdateUi(); }
+  }catch(_){}
+}
+
+function webhidUpdateUi(msg){
+  const st  = document.getElementById('webhidStatus');
+  const con = document.getElementById('webhidConnect');
+  const dis = document.getElementById('webhidDisconnect');
+  if(!st) return;
+  if(!webhid.supported){
+    st.textContent = '○ Не поддерживается этим браузером';
+    st.className = '';
+    if(con) con.disabled = true;
+    if(dis) dis.style.display = 'none';
+    return;
+  }
+  if(webhidConnected()){
+    const nm = (webhid.device && webhid.device.productName) || webhid.id || 'HID-устройство';
+    st.textContent = '● ' + String(nm).slice(0, 36);
+    st.className = 'ok';
+    if(con) con.textContent = '🔌 Подключить другое';
+    if(dis) dis.style.display = '';
+  } else {
+    st.textContent = '○ ' + (msg || 'Не подключено');
+    st.className = '';
+    if(con) con.textContent = '🔌 Подключить напрямую';
+    if(dis) dis.style.display = 'none';
+  }
+}
+
 function gpPoll(){
   const pads = (navigator.getGamepads && navigator.getGamepads()) || [];
   /* список всех активных устройств */
@@ -571,6 +874,9 @@ function gpPoll(){
       list.push({ index: p.index, id: p.id || ('Пульт ' + p.index), connected: p.connected !== false, axes, buttons, moved });
     }
   }
+  /* WebHID-пульт (подключён напрямую) — в общем списке устройств. */
+  const hidPad = webhidPseudoPad();
+  if(hidPad) list.push(hidPad);
   gamepad.list = list;
   gamepad.count = list.length;
 
@@ -611,6 +917,7 @@ function gpPoll(){
   }
   /* moved-флаги живут один кадр, сбросим */
   list.forEach(g => { g.moved = false; });
+  webhid.moved = false;
 }
 
 /* Gamepad API в Chrome/Edge скрывает устройства до первого действия пользователя
@@ -715,7 +1022,9 @@ function updateGamepadHud(){
     el.classList.remove('ok');
     return;
   }
-  el.textContent = `● ${name}` + (gamepad.count > 1 ? ` (#${gamepad.axisIndex})` : '');
+  el.textContent = `● ${name}` + (gamepad.count > 1
+    ? (gamepad.axisIndex === WEBHID_PAD_INDEX ? ' (HID)' : ` (#${gamepad.axisIndex})`)
+    : '');
   el.classList.add('ok');
 }
 
@@ -954,6 +1263,19 @@ addEventListener('keydown', e=>{ if(e.code === 'Escape' && gpCalOpen) gpCloseMod
 gpPoll();
 updateGamepadHud();
 
+/* WebHID: кнопки, авто-восстановление доступа и слушатель отключения. */
+const webhidConnectEl    = document.getElementById('webhidConnect');
+const webhidDisconnectEl = document.getElementById('webhidDisconnect');
+if(webhidConnectEl)    webhidConnectEl.addEventListener('click', webhidRequest);
+if(webhidDisconnectEl) webhidDisconnectEl.addEventListener('click', ()=>webhidCloseDevice());
+function webhidInit(){
+  webhidUpdateUi();
+  if(!webhid.supported) return;
+  navigator.hid.addEventListener('disconnect', webhidOnNativeDisconnect);
+  webhidAutoReconnect();
+}
+webhidInit();
+
 /* Кнопка и клавиша переключения режима полёта (Angle/Acro). */
 document.getElementById('modeBtn').addEventListener('click', e=>{
   e.stopPropagation(); toggleFlightMode();
@@ -1103,6 +1425,10 @@ function renderStart1(){
       <button type="button" class="st-mode st-small" id="stNetBtn">🌐 Сетевая игра</button>
       <button type="button" class="st-mode st-small" id="stFsBtn">⛶ Полный экран</button>
     </div>
+    <p class="st-h3">Аккаунт</p>
+    <div class="st-modes">
+      <a class="st-mode st-small" id="stAuthBtn" href="#">🔑 Войти через портал</a>
+    </div>
     <div class="st-foot">
       <div class="gp-sec"><button type="button" class="st-gpbtn" id="stGpBtn">🎮 Настроить пульт</button></div>
       <button type="button" class="st-back" id="stQuit">${stOpened ? 'Продолжить' : 'Не сейчас'}</button>
@@ -1134,6 +1460,7 @@ function renderStart1(){
     e.stopPropagation(); openGpFromStart();
   });
   document.getElementById('stQuit').addEventListener('click', ()=> hideStart());
+  renderAuth();
   makeCollapsible(startScreenEl);
 }
 function renderStart2(){
@@ -1213,219 +1540,932 @@ document.getElementById('menuBtn').addEventListener('click', e=>{
 });
 
 /* ============================================================
-   Сетевая игра: WebRTC DataChannel с ручным обменом кодами.
-   Хост создаёт код-приглашение, гость отвечает кодом, хост завершает.
+   Сетевая игра: несколько комнат (до 4 участников) с выбором игры.
+   Хост (первый участник) выбирает карту и режим, жмёт «Начать игру»;
+   остальные подключаются к нужной комнате и получают карту/режим хоста.
+   Сигналинг — HTTP-поллинг бэкенда fly-web (/api/signal/*), затем P2P.
    ============================================================ */
-const netModalEl = document.getElementById('netModal');
-const netBtnEl   = document.getElementById('netBtn');
-const netStatusEl   = document.getElementById('netStatus');
-const netStepsEl    = document.getElementById('netSteps');
-const netHostNameEl = document.getElementById('netHost');
-const netJoinNameEl = document.getElementById('netJoin');
+const netModalEl  = document.getElementById('netModal');
+const netBtnEl    = document.getElementById('netBtn');
+const netStatusEl = document.getElementById('netStatus');
+const netStepsEl  = document.getElementById('netSteps');
 
-const net = {
-  pc: null, dc: null,
-  role: '',          // 'host' | 'guest'
-  connected: false,
-  userName: 'Пилот',
-  peerName: 'Соперник',
+const NET_API     = '/api/signal';
+const NET_MAX     = 4;
+const NET_POLL_MS = 2000;
+const NET_MAP_NAMES = { meadow:'Луг', city:'Город', canyon:'Каньон' };
+/* Точки спавна по слоту игрока (0..7): сетка 2×4, чтобы не появляться в одной точке. */
+const NET_SPAWNS = [
+  { x:-5.25, z:-2.5 }, { x:-1.75, z:-2.5 }, { x:1.75, z:-2.5 }, { x:5.25, z:-2.5 },
+  { x:-5.25, z: 2.5 }, { x:-1.75, z: 2.5 }, { x:1.75, z: 2.5 }, { x:5.25, z: 2.5 },
+];
+function netSpawn(slot){ return NET_SPAWNS[slot] || { x:0, z:0 }; }
+
+/* LAN-релей: включается на http (локальная сеть), либо по ?lan / ?relay=host:port.
+   В этом режиме транспорт — один WebSocket к релею (звезда), без auth-web/TURN. */
+const NET_QS = new URLSearchParams(location.search);
+const NET_RELAY = NET_QS.has('lan') || NET_QS.has('relay') || location.protocol === 'http:';
+const NET_ADMIN_KEY = NET_QS.get('admin') || '';
+const LAN_NAME_KEY = 'fly-lan-name';
+const LAN_RELAY_KEY = 'fly-lan-relay';
+
+/* Адрес релея «host[:port]» → URL WebSocket. Пустая строка = текущий хост. */
+function relayWsUrlFromAddr(addr){
+  addr = String(addr == null ? '' : addr).trim();
+  if(addr === '') addr = location.host;
+  if(/^wss?:\/\//.test(addr)) return addr;
+  if(/^https?:\/\//.test(addr)) return addr.replace(/^http/, 'ws').replace(/\/$/, '') + '/ws';
+  const scheme = location.protocol === 'https:' ? 'wss://' : 'ws://';
+  let path = '/ws';
+  let host = addr;
+  const slash = addr.indexOf('/');
+  if(slash >= 0){ host = addr.slice(0, slash); path = addr.slice(slash) || '/ws'; }
+  if(host.indexOf(':') < 0) host += ':8080';   // порт релея по умолчанию
+  if(path.charAt(0) !== '/') path = '/' + path;
+  return scheme + host + path;
+}
+function relayDefaultAddr(){
+  const q = NET_QS.get('relay');
+  if(q) return q;
+  try{ const saved = localStorage.getItem(LAN_RELAY_KEY); if(saved) return saved; }catch(_){}
+  return NET_RELAY ? location.host : '';
+}
+/* Адрес релея «host[:port]» → http-URL его страницы (?lan). Пусто, если адрес не задан. */
+function relayHttpUrlFromAddr(addr){
+  addr = String(addr == null ? '' : addr).trim();
+  if(addr === '') return '';
+  if(/^https?:\/\//.test(addr)) return addr.replace(/\/+$/, '') + '/?lan';
+  if(/^wss?:\/\//.test(addr)) return addr.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/ws\/?$/, '') + '/?lan';
+  let host = addr;
+  const slash = addr.indexOf('/');
+  if(slash >= 0) host = addr.slice(0, slash);
+  if(host.indexOf(':') < 0) host += ':8080';
+  return 'http://' + host + '/?lan';
+}
+/* С сайта (https) ws:// к LAN-IP запрещён (mixed content) — открываем страницу релея в новой вкладке. */
+function openLocalRelay(addr){
+  addr = String(addr == null ? '' : addr).trim();
+  if(addr === ''){ netSetStatus('⚠ Укажите адрес релея (IP:порт)', false); return; }
+  try{ localStorage.setItem(LAN_RELAY_KEY, addr); }catch(_){}
+  const url = relayHttpUrlFromAddr(addr);
+  try{ window.open(url, '_blank', 'noopener'); }catch(_){ location.href = url; }
+  netSetStatus('↗ Открываю локальный релей: ' + url, true);
+}
+let relayTarget = relayDefaultAddr();
+let relayUrl = relayWsUrlFromAddr(relayTarget);
+function lanName(){
+  let n = '';
+  try{ n = localStorage.getItem(LAN_NAME_KEY) || ''; }catch(_){}
+  if(!n){ n = 'Пилот-' + Math.floor(Math.random()*900 + 100); try{ localStorage.setItem(LAN_NAME_KEY, n); }catch(_){} }
+  return n;
+}
+function netReady(){ return NET_RELAY || !!authUser; }
+
+/* ---------- LAN-релей: транспорт по WebSocket ---------- */
+let relayWs = null;
+let relayReady = false;
+
+function relaySend(obj){
+  try{ if(relayWs && relayWs.readyState === 1) relayWs.send(JSON.stringify(obj)); }catch(_){}
+}
+function relayHello(name){ relaySend({ t:'hello', name: name, admin: NET_ADMIN_KEY }); }
+function relayConnect(addr){
+  const target = (addr === undefined || addr === null || String(addr).trim() === '')
+    ? relayTarget : String(addr).trim();
+  const url = relayWsUrlFromAddr(target);
+  if(relayWs && url === relayUrl && (relayWs.readyState === 0 || relayWs.readyState === 1)) return;
+
+  // Переключение на другой релей: уходим из комнаты, закрываем старое соединение.
+  if(netRoom.active){
+    try{ relaySend({ t:'leave' }); }catch(_){}
+    for(const id of Array.from(netRoom.peers.keys())) removePeer(id);
+    netRoom.active = false;
+    netRoom.info = null;
+  }
+  if(relayWs){ try{ relayWs.close(); }catch(_){} }
+  relayWs = null;
+  relayReady = false;
+  relayTarget = target;
+  relayUrl = url;
+  try{ localStorage.setItem(LAN_RELAY_KEY, target); }catch(_){}
+  netRoom.lobbyRooms = [];
+  netSetStatus('○ Подключение к релею…', false);
+
+  let ws;
+  try{ ws = new WebSocket(relayUrl); }
+  catch(_){ netSetStatus('⚠ Некорректный адрес релея', false); renderNetBody(); return; }
+  relayWs = ws;
+
+  ws.addEventListener('open', ()=>{
+    if(ws !== relayWs) return;
+    relayReady = true;
+    netRoom.selfName = lanName();
+    relayHello(netRoom.selfName);
+    relaySend({ t:'lobby' });
+    renderNetBody();
+  });
+  ws.addEventListener('close', ()=>{
+    if(ws !== relayWs) return;   // закрылось старое соединение — игнорируем
+    relayReady = false;
+    relayWs = null;
+    if(netRoom.active){
+      for(const id of Array.from(netRoom.peers.keys())) removePeer(id);
+      netRoom.active = false;
+      netRoom.info = null;
+    }
+    netSetStatus('○ Релей отключён', false);
+    renderNetBody();
+  });
+  ws.addEventListener('error', ()=>{});
+  ws.addEventListener('message', ev => { if(ws === relayWs) relayOnMessage(ev.data); });
+  renderNetBody();
+}
+function relayOnMessage(data){
+  let m;
+  try{ m = JSON.parse(data); }catch(_){ return; }
+  if(!m || !m.t) return;
+  if(m.t === 'hello'){ if(m.self && m.self.name) netRoom.selfName = m.self.name; return; }
+  if(m.t === 'lobby'){
+    if(m.self && m.self.name) netRoom.selfName = m.self.name;
+    netRoom.lobbyRooms = m.rooms || [];
+    syncNetMeta(m);
+    if(!netRoom.active) renderNetBody();
+    return;
+  }
+  if(m.t === 'welcome'){ relayEnter(m); return; }
+  if(m.t === 'room'){ relayRoomUpdate(m); return; }
+  if(m.t === 'st'){
+    const p = netRoom.peers.get(Number(m.id));
+    if(p && Array.isArray(m.p) && Array.isArray(m.q)){
+      p.targetPos.set(m.p[0], m.p[1], m.p[2]);
+      p.targetQuat.set(m.q[0], m.q[1], m.q[2], m.q[3]);
+    }
+    return;
+  }
+  if(m.t === 'error'){ netSetStatus('⚠ ' + m.message, false); return; }
+}
+function syncNetMeta(m){
+  if(Array.isArray(m.maps) && m.maps.length) netRoom.maps = m.maps;
+  if(Array.isArray(m.maxOptions) && m.maxOptions.length) netRoom.maxOptions = m.maxOptions;
+  if(m.maxHard) netRoom.maxHard = Number(m.maxHard) || netRoom.maxHard;
+}
+function relayEnter(m){
+  netRoom.active = true;
+  netRoom.id = m.room ? Number(m.room.id) : 0;
+  netRoom.selfId = Number(m.self.id);
+  netRoom.selfSlot = Number(m.self.slot) || 0;
+  netRoom.selfName = m.self.name;
+  netRoom.info = m.room || null;
+  netRoom.max = (m.room && m.room.max) || netRoom.max;
+  syncNetMeta(m);
+  netRoom.control = {};
+  netRoom.appliedMap = '';
+  netRoom.appliedMode = '';
+  netRoom.startedSeen = false;
+  applyParticipants(m.participants || []);
+  applyNetGame(true);
+  updateNetStatusText();
+  renderNetBody();
+}
+function relayRoomUpdate(m){
+  if(!netRoom.active) return;
+  if(m.room){ netRoom.info = m.room; netRoom.max = m.room.max || netRoom.max; }
+  applyParticipants(m.participants || []);
+  applyNetGame(false);
+  updateNetStatusText();
+  renderNetBody();
+}
+
+const netRoom = {
+  active: false,
+  id: 0,
+  selfId: 0,
+  selfSlot: 0,
+  selfName: 'Пилот',
+  max: NET_MAX,
+  pollTimer: null,
+  lobbyTimer: null,
+  polling: false,
+  pending: [],                 // исходящие SDP: { to, type, sdp }
+  control: {},                 // неотправленное управление хоста: { map?, mode?, started? }
+  peers: new Map(),            // userId -> peer
+  info: null,                  // данные комнаты с сервера
+  lobbyRooms: [],
+  maps: ['meadow', 'city', 'canyon'],
+  maxOptions: [2, 4, 6, 8],
+  maxHard: 8,
+  appliedMap: '',
+  appliedMode: '',
+  startedSeen: false,
+  iceServers: [
+    { urls:['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+    { urls:'stun:stun.cloudflare.com:3478' },
+  ],
 };
 
-function netTextStatus(txt, ok){
+let netKickTimer = null;
+
+function netMapName(id){ return NET_MAP_NAMES[id] || 'Луг'; }
+function netSelfName(){
+  if(NET_RELAY) return netRoom.selfName || lanName();
+  return (authUser && (authUser.display_name || authUser.login)) || 'Пилот';
+}
+function netSetStatus(txt, ok){
   netStatusEl.textContent = txt;
   netStatusEl.className = ok ? 'ok' : '';
 }
-function netSetStatus(txt){
-  netStepsEl.innerHTML = txt;
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 }
 
+/* ---------- окно ---------- */
 netBtnEl.addEventListener('click', e=>{ e.stopPropagation(); closeLevelMenu(); openNetModal(); });
 document.getElementById('netClose').addEventListener('click', closeNetModal);
 netModalEl.addEventListener('click', e=>{ if(e.target === netModalEl) closeNetModal(); });
 addEventListener('keydown', e=>{ if(e.code === 'Escape' && netModalEl.classList.contains('show')) closeNetModal(); });
+addEventListener('pagehide', ()=>{
+  if(!NET_RELAY && netRoom.active){
+    try{
+      navigator.sendBeacon(NET_API + '/leave.php',
+        new Blob([JSON.stringify({ room_id: netRoom.id })], { type:'application/json' }));
+    }catch(_){}
+  }
+});
 
 function openNetModal(){
   netModalEl.classList.add('show');
   netModalEl.setAttribute('aria-hidden','false');
   makeCollapsible(netModalEl);
   expandWindow(netModalEl);
-  netTextStatus(net.connected ? '● ' + net.peerName : '○ Не подключено', net.connected);
-  netStepsEl.innerHTML = net.connected
-    ? `<p class="net-step">Соединение установлено. Летайте вместе — на сцене виден аппарат соперника. Рекомендуется свободный полёт.</p>`
-    : `<p class="net-step">Хост: нажмите «Создать приглашение», скопируйте код-приглашение и отправьте другу.</p>
-       <p class="net-step">Гость: нажмите «Присоединиться», вставьте полученный код, скопи́руйте ответный код и отправьте хосту.</p>
-       <p class="net-step">Хост: вставьте ответный код в поле «Ответ гостя» (шаг 3). Соединение установится автоматически.</p>`;
+  updateNetStatusText();
+  renderNetBody();
+  if(NET_RELAY) relayConnect();
+  else if(authUser && !netRoom.active) startLobbyPolling();
 }
-
 function closeNetModal(){
   netModalEl.classList.remove('show');
   netModalEl.setAttribute('aria-hidden','true');
-  /* если открыли из стартового экрана — возвращаемся на него */
+  stopLobbyPolling();
   if(stStep !== 0) showStart(stStep, stTarget);
 }
 
-/* -- помощники обмена кодами -- */
-function codeOut(label, value){
-  const ta = document.createElement('textarea');
-  ta.className = 'net-code';
-  ta.readOnly = true;
-  ta.value = value;
-  ta.addEventListener('click', ()=>ta.select());
-  const div = document.createElement('div');
-  div.innerHTML = label;
-  div.appendChild(ta);
-  netStepsEl.appendChild(div);
+function updateNetStatusText(){
+  if(!netRoom.active){ netSetStatus('○ Не подключено', false); return; }
+  const total = netRoom.peers.size + 1;
+  const anyOpen = Array.from(netRoom.peers.values()).some(p=>p.open);
+  const info = netRoom.info || {};
+  const phase = info.started ? 'игра идёт' : 'ожидание';
+  netSetStatus('● ' + (info.title || 'Игра') + ' ' + total + '/' + netRoom.max + ' · ' + phase + (anyOpen ? ' · соединено' : ''), true);
 }
-function codeIn(label, onok){
-  const ta = document.createElement('textarea');
-  ta.className = 'net-code';
-  ta.placeholder = 'вставьте код сюда…';
-  ta.addEventListener('click', ()=>ta.select());
-  const btn = document.createElement('button');
-  btn.type = 'button';
-  btn.textContent = 'ОК';
-  btn.addEventListener('click', ()=>onok(ta.value.trim()));
-  const div = document.createElement('div');
-  div.innerHTML = label;
-  div.appendChild(ta);
-  div.appendChild(btn);
-  netStepsEl.appendChild(div);
+
+/* ---------- отрисовка ---------- */
+/* Строка «Релей»: в LAN-режиме — подключение в этом окне, на сайте (https) —
+   открытие страницы релея (ws:// к LAN-IP из https браузер блокирует). */
+function netRelayHtml(){
+  return '<p class="net-step">Релей: ' +
+    '<input id="netRelay" class="net-addr" value="' + escapeHtml(relayTarget) + '" placeholder="192.168.1.50:8080"> ' +
+    '<button type="button" id="netRelayGo" class="net-mini">' + (NET_RELAY ? 'Подключиться' : 'Открыть релей') + '</button>' +
+    (NET_RELAY ? (relayReady ? ' <span class="net-ok">● онлайн</span>' : ' <span class="net-wait">● подключение…</span>') : '') +
+  '</p>';
 }
-function desc2code(desc){
-  return btoa(unescape(encodeURIComponent(JSON.stringify(desc)))).slice(0, 1200);
-}
-function code2desc(str){
-  str = str.replace(/^invite:/,'').trim();
-  return JSON.parse(decodeURIComponent(escape(atob(str))));
-}
-function netIceDone(p){
-  if(!p || !p.iceGatheringState) return Promise.resolve(p);
-  if(p.iceGatheringState === 'complete') return Promise.resolve(p);
-  return new Promise(res=>{
-    p.addEventListener('icegatheringstatechange', ()=>{
-      if(p.iceGatheringState === 'complete') res(p);
-    });
+function netBindRelayLine(){
+  const rg = document.getElementById('netRelayGo');
+  if(rg) rg.addEventListener('click', ()=>{
+    const el = document.getElementById('netRelay');
+    const val = el ? el.value : '';
+    if(NET_RELAY) relayConnect(val); else openLocalRelay(val);
+  });
+  const rl = document.getElementById('netRelay');
+  if(rl) rl.addEventListener('keydown', e=>{
+    if(e.key !== 'Enter') return;
+    if(NET_RELAY) relayConnect(rl.value); else openLocalRelay(rl.value);
   });
 }
 
-/* -- хост: приглашение -- */
-netHostElSetup();
-function netHostElSetup(){
-  netHostNameEl.addEventListener('click', netCreateInvite);
+function renderNetBody(){
+  if(!netReady()){
+    netStepsEl.innerHTML = '<p class="net-step">Для сетевой игры нужен вход через портал — соперники подбираются среди вошедших. Нажмите «🔑 Войти через портал» в панели или на стартовом экране.</p>' + netRelayHtml();
+    netBindRelayLine();
+    return;
+  }
+  if(!netRoom.active){ renderLobby(); return; }
+  renderRoom();
 }
 
-async function netCreateInvite(){
+function renderLobby(){
+  const canStart = NET_RELAY ? relayReady : true;
+  const rows = netRoom.lobbyRooms.map(r=>{
+    const full = r.count >= r.max;
+    const status = r.started ? 'идёт' : 'ожидание';
+    return '<div class="net-room">' +
+      '<div class="net-room-main"><b>' + escapeHtml(r.title || 'Игра') + '</b>' +
+        '<small>' + escapeHtml(r.host_name || '—') + ' · ' + netMapName(r.map) + ' · ' + status + '</small></div>' +
+      '<div class="net-room-side"><span>' + r.count + '/' + r.max + '</span>' +
+        '<button type="button" data-join="' + r.id + '"' + ((full || !canStart) ? ' disabled' : '') + '>Войти</button></div>' +
+    '</div>';
+  }).join('');
+
+  let head = netRelayHtml();
+  if(NET_RELAY){
+    head +=
+      '<p class="net-step">Ваше имя: ' +
+        '<input id="netName" class="net-name" maxlength="24" value="' + escapeHtml(lanName()) + '"></p>';
+  }
+
+  netStepsEl.innerHTML = head +
+    '<p class="net-step">Название новой игры: ' +
+      '<input id="netTitle" class="net-name" maxlength="40" placeholder="по умолчанию"></p>' +
+    '<div class="gp-btns net-row">' +
+      '<button type="button" id="netCreate"' + (canStart ? '' : ' disabled') + '>➕ Создать игру</button>' +
+      '<button type="button" id="netQuick"' + (canStart ? '' : ' disabled') + '>⚡ Быстрая игра</button>' +
+      '<button type="button" id="netRefresh" title="Обновить список">🔄</button>' +
+    '</div>' +
+    '<p class="net-step">Открытые игры — выберите нужную и нажмите «Войти»:</p>' +
+    (netRoom.lobbyRooms.length
+      ? '<div class="net-rooms">' + rows + '</div>'
+      : '<p class="net-step">Пока нет открытых игр. Создайте первую.</p>');
+
+  const c = document.getElementById('netCreate');  if(c) c.addEventListener('click', netCreate);
+  const q = document.getElementById('netQuick');   if(q) q.addEventListener('click', netQuick);
+  const rf = document.getElementById('netRefresh'); if(rf) rf.addEventListener('click', refreshLobby);
+  const nm = document.getElementById('netName');
+  if(nm) nm.addEventListener('change', ()=>{
+    const v = nm.value.trim().slice(0, 24);
+    if(!v) return;
+    try{ localStorage.setItem(LAN_NAME_KEY, v); }catch(_){}
+    netRoom.selfName = v;
+    relayHello(v);
+  });
+  netBindRelayLine();
+  netStepsEl.querySelectorAll('button[data-join]').forEach(b=>
+    b.addEventListener('click', ()=> netJoin(Number(b.dataset.join))));
+}
+
+function renderRoom(){
+  const info = netRoom.info || {};
+  const isHost = info.host_user_id === netRoom.selfId;
+  const mode = (info.params && info.params.mode) || 'angle';
+
+  const rows = ['<div class="net-player"><span>' + escapeHtml(netRoom.selfName) + '</span><em>' + (isHost ? 'вы · хост' : 'вы') + '</em></div>'];
+  for(const p of netRoom.peers.values()){
+    let stateTxt;
+    if(p.open) stateTxt = 'соединён';
+    else if(p.iceState === 'failed' || p.connState === 'failed') stateTxt = 'ошибка соединения';
+    else stateTxt = 'подключение…';
+    const tag = (p.userId === info.host_user_id ? ' · хост' : '') + ' · ' + stateTxt;
+    rows.push('<div class="net-player"><span>' + escapeHtml(p.name) + '</span><em>' + tag.trim() + '</em></div>');
+  }
+
+  let controls;
+  if(isHost){
+    const mapBtns = netRoom.maps.map(m =>
+      '<button type="button" data-map="' + m + '" class="' + (m === info.map ? 'sel' : '') + '">' + netMapName(m) + '</button>').join('');
+    const modeBtns =
+      '<button type="button" data-mode="angle" class="' + (mode === 'angle' ? 'sel' : '') + '">🎯 Angle</button>' +
+      '<button type="button" data-mode="acro" class="' + (mode === 'acro' ? 'sel' : '') + '">🌀 Acro</button>';
+    const curCount = 1 + netRoom.peers.size;
+    const sizeBtns = netRoom.maxOptions.map(n =>
+      '<button type="button" data-max="' + n + '" class="' + (n === info.max ? 'sel' : '') + '"' +
+      (n < curCount ? ' disabled' : '') + '>' + n + '</button>').join('');
+    controls =
+      '<p class="net-h3">Локация</p><div class="net-maps">' + mapBtns + '</div>' +
+      '<p class="net-h3">Режим полёта</p><div class="net-maps">' + modeBtns + '</div>' +
+      '<p class="net-h3">Участников (макс.)</p><div class="net-maps">' + sizeBtns + '</div>' +
+      '<div class="gp-btns net-row">' +
+        (info.started ? '<button type="button" disabled>● Игра идёт</button>'
+                      : '<button type="button" id="netStart">🚀 Начать игру</button>') +
+        '<button type="button" id="netLeave" class="net-ghost">Выйти</button>' +
+      '</div>';
+  } else {
+    controls =
+      '<p class="net-step">Локация хоста: <b>' + netMapName(info.map) + '</b>, режим <b>' + (mode === 'angle' ? 'Angle' : 'Acro') + '</b>.</p>' +
+      (info.started ? '<p class="net-step">Игра идёт — летайте вместе.</p>'
+                    : '<p class="net-step">Ожидание старта хоста…</p>') +
+      '<div class="gp-btns net-row"><button type="button" id="netLeave" class="net-ghost">Выйти из игры</button></div>';
+  }
+
+  netStepsEl.innerHTML =
+    '<div class="net-player"><span>' + escapeHtml(info.title || 'Игра') + '</span><em>' +
+      (info.started ? 'идёт' : 'ожидание') + ' · ' + netMapName(info.map) + '</em></div>' +
+    '<p class="net-step">Участники (' + rows.length + '/' + netRoom.max + '):</p>' +
+    '<div class="net-players">' + rows.join('') + '</div>' + controls;
+
+  const st = document.getElementById('netStart');  if(st) st.addEventListener('click', hostStart);
+  const lv = document.getElementById('netLeave');  if(lv) lv.addEventListener('click', netLeave);
+  netStepsEl.querySelectorAll('button[data-map]').forEach(b=> b.addEventListener('click', ()=> hostSetMap(b.dataset.map)));
+  netStepsEl.querySelectorAll('button[data-mode]').forEach(b=> b.addEventListener('click', ()=> hostSetMode(b.dataset.mode)));
+  netStepsEl.querySelectorAll('button[data-max]').forEach(b=> b.addEventListener('click', ()=> hostSetMax(Number(b.dataset.max))));
+}
+
+/* ---------- HTTP API ---------- */
+async function netApi(path, body){
+  const res = await fetch(NET_API + '/' + path, {
+    method:'POST',
+    credentials:'include',
+    headers:{ 'Content-Type':'application/json', 'Accept':'application/json' },
+    body: JSON.stringify(body || {}),
+  });
+  let data = null;
+  try{ data = await res.json(); }catch(_){}
+  if(!res.ok){
+    const err = new Error((data && data.error) || ('HTTP ' + res.status));
+    err.status = res.status;
+    throw err;
+  }
+  return data || {};
+}
+
+async function netCreate(){
+  if(!netReady() || netRoom.active) return;
+  const titleEl = document.getElementById('netTitle');
+  const title = titleEl ? titleEl.value.trim().slice(0, 40) : '';
+  if(NET_RELAY){ relaySend({ t:'create', title }); netSetStatus('⟳ Создание игры…', true); return; }
+  netSetStatus('⟳ Создание игры…', true);
+  try{ await enterRoom(await netApi('create.php', { title })); }
+  catch(err){ netSetStatus('⚠ ' + err.message, false); }
+}
+async function netQuick(){
+  if(!netReady() || netRoom.active) return;
+  if(NET_RELAY){ relaySend({ t:'quick' }); netSetStatus('⟳ Поиск игры…', true); return; }
+  netSetStatus('⟳ Поиск игры…', true);
+  try{ await enterRoom(await netApi('find.php', {})); }
+  catch(err){ netSetStatus('⚠ ' + err.message, false); }
+}
+async function netJoin(roomId){
+  if(!netReady() || netRoom.active) return;
+  if(NET_RELAY){ relaySend({ t:'join', roomId }); netSetStatus('⟳ Подключение…', true); return; }
+  netSetStatus('⟳ Подключение…', true);
+  try{ await enterRoom(await netApi('join.php', { room_id: roomId })); }
+  catch(err){ netSetStatus('⚠ ' + err.message, false); }
+}
+
+async function enterRoom(data){
+  stopLobbyPolling();
+  netRoom.active = true;
+  netRoom.id = Number(data.room && data.room.id) || 0;
+  netRoom.selfId = data.self ? Number(data.self.id) : (Number(authUser.id) || 0);
+  netRoom.selfSlot = data.self && data.self.slot != null ? Number(data.self.slot) : 0;
+  netRoom.selfName = (data.self && data.self.name) || netSelfName();
+  netRoom.max = Number(data.max) || NET_MAX;
+  if(Array.isArray(data.maxOptions) && data.maxOptions.length) netRoom.maxOptions = data.maxOptions;
+  if(data.maxHard) netRoom.maxHard = Number(data.maxHard) || netRoom.maxHard;
+  if(Array.isArray(data.maps) && data.maps.length) netRoom.maps = data.maps;
+  netRoom.info = data.room || null;
+  netRoom.control = {};
+  netRoom.appliedMap = '';
+  netRoom.appliedMode = '';
+  netRoom.startedSeen = false;
+  await netLoadIce();            // STUN/TURN до создания соединений
+  if(!netRoom.active) return;    // пока ждали — могли выйти
+  applyParticipants(data.participants || []);
+  applyNetGame(true);
+  startNetPolling();
+  updateNetStatusText();
+  renderNetBody();
+}
+
+/* ICE-серверы (STUN + TURN с временными креденшелами) с бэкенда. */
+async function netLoadIce(){
   try{
-    net.pc = new RTCPeerConnection({ iceServers:[{ urls:'stun:stun.l.google.com:19302' }] });
-    net.dc = net.pc.createDataChannel('fly', { ordered:false, maxRetransmits:1 });
-    wireDataChannel(net.dc);
-    net.pc.ondatachannel = e=>wireDataChannel(e.channel);
-    const offer = await net.pc.createOffer();
-    await net.pc.setLocalDescription(offer);
-    await netIceDone(net.pc);
-    netTextStatus('⟳ Код готов — отправьте другу', true);
-    netStepsEl.innerHTML = '';
-    codeOut('<b>Ваш код-приглашение</b> (скопируйте):', desc2code(net.pc.localDescription));
-    netHostNameEl.replaceWith(netHostNameEl.cloneNode(true));
-    codeIn('<b>Ответ гостя</b> (шаг 3):', async val=>{
-      try{
-        await net.pc.setRemoteDescription(code2desc(val));
-        netTextStatus('⟳ Подключение…', true);
-      }catch(err){ netTextStatus('⚠ Ошибка ответа: ' + err.message, false); }
-    });
-  }catch(err){ netTextStatus('⚠ ' + err.message, false); }
+    const data = await netApi('ice.php', {});
+    if(Array.isArray(data.iceServers) && data.iceServers.length){
+      netRoom.iceServers = data.iceServers;
+    }
+  }catch(_){ /* остаются STUN по умолчанию */ }
 }
 
-/* -- гость: ответ -- */
-netJoinNameSetup();
-function netJoinNameSetup(){
-  netJoinNameEl.addEventListener('click', netCreateAnswer);
+async function netLeave(){
+  stopLobbyPolling();
+  stopNet();
+  updateNetStatusText();
+  renderNetBody();
+  if(!NET_RELAY && authUser && netModalEl.classList.contains('show')) startLobbyPolling();
 }
-async function netCreateAnswer(){
+
+function stopNet(){
+  if(netKickTimer){ clearTimeout(netKickTimer); netKickTimer = null; }
+  if(netRoom.pollTimer){ clearInterval(netRoom.pollTimer); netRoom.pollTimer = null; }
+  const roomId = netRoom.id;
+  for(const id of Array.from(netRoom.peers.keys())) removePeer(id);
+  netRoom.pending = [];
+  netRoom.control = {};
+  netRoom.active = false;
+  netRoom.polling = false;
+  netRoom.info = null;
+  if(NET_RELAY){
+    relaySend({ t:'leave' });
+    return;
+  }
+  if(roomId){
+    // best-effort: уведомить сервер (sendBeacon тоже сработает при уходе со страницы)
+    fetch(NET_API + '/leave.php', {
+      method:'POST', credentials:'include',
+      headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify({ room_id: roomId }), keepalive:true,
+    }).catch(()=>{});
+  }
+}
+
+/* ---------- поллинг лобби и комнаты ---------- */
+function startLobbyPolling(){
+  if(netRoom.lobbyTimer) clearInterval(netRoom.lobbyTimer);
+  refreshLobby();
+  netRoom.lobbyTimer = setInterval(refreshLobby, NET_POLL_MS);
+}
+function stopLobbyPolling(){
+  if(netRoom.lobbyTimer){ clearInterval(netRoom.lobbyTimer); netRoom.lobbyTimer = null; }
+}
+async function refreshLobby(){
+  if(NET_RELAY){ relaySend({ t:'lobby' }); return; }
+  if(netRoom.active || !authUser) return;
   try{
-    netStepsEl.innerHTML = '';
-    codeIn('<b>Код-приглашение хоста</b> (вставьте):', async val=>{
-      try{
-        net.pc = new RTCPeerConnection({ iceServers:[{ urls:'stun:stun.l.google.com:19302' }] });
-        net.pc.ondatachannel = e=>wireDataChannel(e.channel);
-        await net.pc.setRemoteDescription(code2desc(val));
-        const answer = await net.pc.createAnswer();
-        await net.pc.setLocalDescription(answer);
-        await netIceDone(net.pc);
-        netTextStatus('⟳ Ответ готов — отправьте хосту', true);
-        codeOut('<b>Ваш ответный код</b> (скопируйте):', desc2code(net.pc.localDescription));
-      }catch(err){ netTextStatus('⚠ ' + err.message, false); }
-    });
-  }catch(err){ netTextStatus('⚠ ' + err.message, false); }
+    const data = await netApi('rooms.php', {});
+    netRoom.lobbyRooms = data.rooms || [];
+    if(Array.isArray(data.maps) && data.maps.length) netRoom.maps = data.maps;
+    if(!netRoom.active) renderLobby();
+  }catch(_){}
 }
 
-/* -- данные -- */
-function wireDataChannel(dc){
-  net.dc = dc;
+function startNetPolling(){
+  if(netRoom.pollTimer) clearInterval(netRoom.pollTimer);
+  netPollOnce();
+  netRoom.pollTimer = setInterval(netPollOnce, NET_POLL_MS);
+}
+function netKick(){
+  if(!netRoom.active || netKickTimer) return;
+  netKickTimer = setTimeout(()=>{ netKickTimer = null; netPollOnce(); }, 150);
+}
+
+async function netPollOnce(){
+  if(!netRoom.active || netRoom.polling) return;
+  netRoom.polling = true;
+  try{
+    const send = netRoom.pending.slice();
+    const control = (netRoom.control && Object.keys(netRoom.control).length) ? netRoom.control : null;
+    const body = { room_id: netRoom.id, send };
+    if(control) body.control = control;
+    const data = await netApi('exchange.php', body);
+    if(send.length) netRoom.pending = netRoom.pending.filter(x => send.indexOf(x) === -1);
+    if(control) netRoom.control = {};
+    if(data.room) netRoom.info = data.room;
+    if(data.max) netRoom.max = Number(data.max);
+    if(Array.isArray(data.maxOptions) && data.maxOptions.length) netRoom.maxOptions = data.maxOptions;
+    applyParticipants(data.participants || []);
+    applyNetGame(false);
+    for(const sig of (data.signals || [])) await handleSignal(sig);
+    updateNetStatusText();
+    renderNetBody();
+  }catch(err){
+    if(err.status === 401)      stopNet(), netSetStatus('⚠ Требуется вход через портал', false);
+    else if(err.status === 404) stopNet(), netSetStatus('○ Игра закрыта', false);
+    else if(err.status === 403) stopNet(), netSetStatus('○ Сессия закрыта', false);
+  }finally{
+    netRoom.polling = false;
+  }
+}
+
+/* ---------- управление игрой (хост) ---------- */
+/* Единый хост-контроль: mesh — через exchange (control), релей — через WS. */
+function hostControl(patch){
+  const info = netRoom.info;
+  if(!info || info.host_user_id !== netRoom.selfId) return;
+  if('map' in patch) info.map = patch.map;
+  if('mode' in patch){ info.params = info.params || {}; info.params.mode = patch.mode; }
+  if('max' in patch){ info.max = patch.max; netRoom.max = patch.max; }
+  if('started' in patch) info.started = !!patch.started;
+  if(NET_RELAY){
+    relaySend(Object.assign({ t:'control' }, patch));
+  } else {
+    netRoom.control = Object.assign(netRoom.control || {}, patch);
+    netKick();
+  }
+  applyNetGame(true);
+  renderNetBody();
+}
+function hostSetMap(map){ hostControl({ map }); }
+function hostSetMode(mode){ hostControl({ mode }); }
+function hostSetMax(max){
+  if(max < (1 + netRoom.peers.size)) return; // нельзя меньше числа текущих участников
+  hostControl({ max });
+}
+function hostStart(){ hostControl({ started:true }); }
+
+/* Применить карту/режим хоста: у хоста — сразу, у гостей — при старте. */
+function applyNetGame(force){
+  const info = netRoom.info;
+  if(!info) return;
+  const isHost = info.host_user_id === netRoom.selfId;
+  const started = !!info.started;
+  if(!(started || (force && isHost))) return;
+
+  if(netRoom.appliedMap !== info.map){
+    netRoom.appliedMap = info.map;
+    cfg.map = info.map;
+    saveCfg();
+    hideStart();
+    const fi = LEVELS.findIndex(l => l.free);
+    loadLevel(fi >= 0 ? fi : LEVELS.length - 1);
+    netPlaceLocalAtSpawn();
+  }
+  const mode = (info.params && info.params.mode) || 'angle';
+  if(netRoom.appliedMode !== mode){
+    netRoom.appliedMode = mode;
+    setFlightMode(mode);
+  }
+
+  /* Как только игра началась — переходим в неё, окно закрываем сами. */
+  if(started && !netRoom.startedSeen){
+    netRoom.startedSeen = true;
+    if(netModalEl.classList.contains('show')) closeNetModal();
+  }
+}
+
+/* Поставить местный дрон в персональную точку спавна (не в общий ноль). */
+function netPlaceLocalAtSpawn(){
+  const s = netSpawn(netRoom.selfSlot);
+  state.pos.set(s.x, GROUND_REST, s.z);
+  state.vel.set(0, 0, 0);
+  state.yaw = 0; state.pitch = 0; state.roll = 0;
+  state.quat.set(0, 0, 0, 1);
+  camera.position.set(s.x, GROUND_REST + 3.4, s.z - 9);
+}
+
+/* ---------- участники и пары ---------- */
+function applyParticipants(list){
+  const seen = new Set();
+  for(const part of list){
+    const id = Number(part.user_id);
+    if(!id || id === netRoom.selfId) continue;
+    seen.add(id);
+    ensurePeer(id, part.name, part.slot);
+  }
+  for(const id of Array.from(netRoom.peers.keys())){
+    if(!seen.has(id)) removePeer(id);
+  }
+}
+
+function ensurePeer(userId, name, slot){
+  userId = Number(userId);
+  let p = netRoom.peers.get(userId);
+  if(!p){
+    const s = netSpawn(slot != null ? Number(slot) : 0);
+    p = {
+      userId,
+      name: name || 'Пилот',
+      slot: slot != null ? Number(slot) : 0,
+      pc: null, dc: null,
+      targetPos: new THREE.Vector3(s.x, GROUND_REST, s.z),
+      targetQuat: new THREE.Quaternion(),
+      obj: null, props: [], label: null,
+      open: false,
+    };
+    netRoom.peers.set(userId, p);
+  }
+  if(name) p.name = name;
+  if(slot != null) p.slot = Number(slot);
+  if(NET_RELAY){
+    /* Релей: соединение одно (WebSocket), борт показываем сразу. */
+    if(!p.open){ p.open = true; showPeerDrone(p, true); }
+  } else if(!p.pc){
+    createPeerConnection(p);
+  }
+  return p;
+}
+
+function createPeerConnection(p){
+  p.pc = new RTCPeerConnection({ iceServers: netRoom.iceServers });
+  p.createdAt = Date.now();
+  p.iceState = '';
+  p.connState = '';
+  p.pc.oniceconnectionstatechange = ()=>{
+    p.iceState = p.pc ? p.pc.iceConnectionState : '';
+    if(!p.open) renderNetBody();
+  };
+  p.pc.onconnectionstatechange = ()=>{
+    p.connState = p.pc ? p.pc.connectionState : '';
+    if(!p.open) renderNetBody();
+  };
+  p.pc.ondatachannel = e => wirePeerChannel(p, e.channel);
+
+  /* Инициатор пары — участник с меньшим user_id: в паре ровно один offer. */
+  if(netRoom.selfId && netRoom.selfId < p.userId){
+    const dc = p.pc.createDataChannel('fly', { ordered:false, maxRetransmits:1 });
+    wirePeerChannel(p, dc);
+    (async ()=>{
+      try{
+        const offer = await p.pc.createOffer();
+        await p.pc.setLocalDescription(offer);
+        await netIceDone(p.pc);
+        netQueueSdp(p.userId, 'offer', p.pc.localDescription.sdp);
+      }catch(_){}
+    })();
+  }
+}
+
+function wirePeerChannel(p, dc){
+  p.dc = dc;
   dc.addEventListener('open', ()=>{
-    net.connected = true;
-    net.pc.onconnectionstatechange = updateNetState;
-    dc.send(JSON.stringify({ t:'hello', name: net.userName }));
-    showRemoteDrone(true);
-    netTextStatus('● Соединено', true);
+    p.open = true;
+    try{ dc.send(JSON.stringify({ t:'hello', name: netRoom.selfName })); }catch(_){}
+    showPeerDrone(p, true);
+    updateNetStatusText();
+    renderNetBody();
   });
-  dc.addEventListener('close', ()=>updateNetState());
-  dc.addEventListener('error', ()=>updateNetState());
+  dc.addEventListener('close', ()=>{ p.open = false; });
+  dc.addEventListener('error', ()=>{ p.open = false; });
   dc.addEventListener('message', ev=>{
     try{
       const m = JSON.parse(ev.data);
-      if(m.t === 'hello'){ net.peerName = m.name || 'Пилот'; netTextStatus('● ' + net.peerName, true); }
-      else if(m.t === 'st' && net.connected){
-        remoteTargetPos.set(m.p[0], m.p[1], m.p[2]);
-        remoteTargetQuat.set(m.q[0], m.q[1], m.q[2], m.q[3]);
+      if(m.t === 'hello'){
+        if(m.name){ p.name = String(m.name).slice(0, 60); updatePeerLabel(p); renderNetBody(); }
+      }else if(m.t === 'st'){
+        p.targetPos.set(m.p[0], m.p[1], m.p[2]);
+        p.targetQuat.set(m.q[0], m.q[1], m.q[2], m.q[3]);
       }
     }catch(_){}
   });
 }
-function updateNetState(){
-  const isUp = net.dc && net.dc.readyState === 'open';
-  net.connected = isUp;
-  if(!isUp){
-    showRemoteDrone(false);
-    netTextStatus('○ Не подключено', false);
-  }
+
+function netQueueSdp(to, type, sdp){
+  netRoom.pending = netRoom.pending.filter(x => !(x.to === to && x.type === type));
+  netRoom.pending.push({ to, type, sdp });
+  netKick();
 }
 
-/* -- удалённый дрон соперника: клон меша + плавная интерполяция -- */
-const remoteTargetPos  = new THREE.Vector3(0, GROUND_REST, 0);
-const remoteTargetQuat = new THREE.Quaternion();
-let remoteDroneObj = null;
-let remoteProps = [];
-function showRemoteDrone(on){
-  if(on && !remoteDroneObj){
+async function handleSignal(sig){
+  const from = Number(sig.from_user_id);
+  if(!from || from === netRoom.selfId) return;
+  const p = ensurePeer(from);
+  if(!p.pc) return;
+  let sdp = sig.sdp, type = sig.type;
+  // Совместимость со старым форматом (слал JSON описания целиком как sdp).
+  if(typeof sdp === 'string' && sdp.charAt(0) === '{'){
+    try{ const d = JSON.parse(sdp); if(d && d.sdp){ sdp = d.sdp; if(d.type) type = d.type; } }catch(_){}
+  }
+  const desc = { type, sdp };
+  try{
+    if(sig.type === 'offer'){
+      await p.pc.setRemoteDescription(desc);
+      const answer = await p.pc.createAnswer();
+      await p.pc.setLocalDescription(answer);
+      await netIceDone(p.pc);
+      netQueueSdp(from, 'answer', p.pc.localDescription.sdp);
+    }else if(sig.type === 'answer'){
+      if(p.pc.signalingState === 'have-local-offer'){
+        await p.pc.setRemoteDescription(desc);
+      }
+    }
+  }catch(_){}
+}
+
+function netIceDone(p){
+  if(!p || !p.iceGatheringState) return Promise.resolve(p);
+  if(p.iceGatheringState === 'complete') return Promise.resolve(p);
+  return new Promise(res=>{
+    const onChange = ()=>{
+      if(p.iceGatheringState === 'complete'){
+        p.removeEventListener('icegatheringstatechange', onChange);
+        res(p);
+      }
+    };
+    p.addEventListener('icegatheringstatechange', onChange);
+    setTimeout(()=>{ p.removeEventListener('icegatheringstatechange', onChange); res(p); }, 6000);
+  });
+}
+
+/* ---------- удалённые борта и подписи имён ---------- */
+function showPeerDrone(p, on){
+  if(on && !p.obj){
     const built = makeDroneMesh(DRONE_MODELS[0]);
-    remoteDroneObj = built.group;
-    remoteProps = built.props;
-    scene.add(remoteDroneObj);
-  } else if(!on && remoteDroneObj){
-    scene.remove(remoteDroneObj);
-    disposeTree(remoteDroneObj);
-    remoteDroneObj = null;
-    remoteProps = [];
+    p.obj = built.group;
+    p.props = built.props;
+    const s = netSpawn(p.slot);
+    p.obj.position.set(s.x, GROUND_REST, s.z);
+    p.targetPos.set(s.x, GROUND_REST, s.z);
+    p.targetQuat.set(0, 0, 0, 1);
+    scene.add(p.obj);
+    updatePeerLabel(p);
+  }else if(!on && p.obj){
+    if(p.label){ p.obj.remove(p.label); disposeTree(p.label); p.label = null; }
+    scene.remove(p.obj);
+    disposeTree(p.obj);
+    p.obj = null;
+    p.props = [];
   }
 }
 
-/* -- сетевые тики: приём (интерполяция) и отправка (20 Гц) -- */
+function updatePeerLabel(p){
+  if(!p.obj) return;
+  if(p.label){ p.obj.remove(p.label); disposeTree(p.label); p.label = null; }
+  p.label = makeNameLabel(p.name);
+  p.label.position.set(0, 1.7, 0);
+  p.obj.add(p.label);
+}
+
+function makeNameLabel(name){
+  const text = (name || 'Пилот').slice(0, 24);
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  const font = '600 30px system-ui, "Segoe UI", sans-serif';
+  ctx.font = font;
+  const pad = 18;
+  const w = Math.max(64, Math.ceil(ctx.measureText(text).width) + pad * 2);
+  const h = 46;
+  canvas.width = w; canvas.height = h;
+  ctx.font = font;
+  ctx.fillStyle = 'rgba(6,12,20,0.74)';
+  roundRectPath(ctx, 1, 1, w - 2, h - 2, 11);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(159,208,255,0.5)';
+  ctx.lineWidth = 2;
+  roundRectPath(ctx, 1, 1, w - 2, h - 2, 11);
+  ctx.stroke();
+  ctx.fillStyle = '#cfe6ff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, w / 2, h / 2 + 1);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: tex, transparent: true, depthTest: false, depthWrite: false,
+  }));
+  const k = 0.011;
+  sprite.scale.set(w * k, h * k, 1);
+  sprite.renderOrder = 999;
+  return sprite;
+}
+function roundRectPath(ctx, x, y, w, h, r){
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function removePeer(userId){
+  userId = Number(userId);
+  const p = netRoom.peers.get(userId);
+  if(!p) return;
+  showPeerDrone(p, false);
+  try{ if(p.dc) p.dc.close(); }catch(_){}
+  try{ if(p.pc) p.pc.close(); }catch(_){}
+  netRoom.peers.delete(userId);
+  updateNetStatusText();
+}
+
+/* ---------- тики: интерполяция удалённых бортов и отправка состояния (20 Гц) ---------- */
 setInterval(()=>{
-  if(!net.connected || !remoteDroneObj) return;
-  remoteDroneObj.position.lerp(remoteTargetPos, 0.5);
-  remoteDroneObj.quaternion.slerp(remoteTargetQuat, 0.5);
   const spin = 10;
-  for(const p of remoteProps) p.rotation.y += p.userData.dir * spin * 0.05;
+  for(const p of netRoom.peers.values()){
+    if(!p.obj) continue;
+    p.obj.position.lerp(p.targetPos, 0.5);
+    p.obj.quaternion.slerp(p.targetQuat, 0.5);
+    for(const prop of p.props) prop.rotation.y += prop.userData.dir * spin * 0.05;
+  }
 }, 50);
+
 setInterval(()=>{
-  if(!net.connected || !net.dc || net.dc.readyState !== 'open') return;
+  if(NET_RELAY){
+    if(!netRoom.active || !relayReady) return;
+    const qr = state.quat;
+    relaySend({ t:'st', p:[state.pos.x, state.pos.y, state.pos.z], q:[qr.x, qr.y, qr.z, qr.w] });
+    return;
+  }
+  if(netRoom.peers.size === 0) return;
   const q = state.quat;
-  net.dc.send(JSON.stringify({
+  const payload = JSON.stringify({
     t:'st', p:[state.pos.x, state.pos.y, state.pos.z],
     q:[q.x, q.y, q.z, q.w]
-  }));
+  });
+  for(const p of netRoom.peers.values()){
+    if(p.open && p.dc && p.dc.readyState === 'open'){
+      try{ p.dc.send(payload); }catch(_){}
+    }
+  }
 }, 50);
+
+/* Страховка: если у инициатора за ~7 с канал не открылся — пересоздаём связь. */
+setInterval(netPeerWatchdog, 3000);
+function netPeerWatchdog(){
+  if(NET_RELAY || !netRoom.active) return;
+  const now = Date.now();
+  for(const p of netRoom.peers.values()){
+    if(p.open || !p.pc) continue;
+    if(!(netRoom.selfId && netRoom.selfId < p.userId)) continue; // пересоздаёт инициатор пары
+    if(p.createdAt && (now - p.createdAt) > 7000 && (p.retries || 0) < 2){
+      p.retries = (p.retries || 0) + 1;
+      try{ if(p.dc) p.dc.close(); }catch(_){}
+      try{ p.pc.close(); }catch(_){}
+      p.pc = null;
+      p.dc = null;
+      createPeerConnection(p);
+    }
+  }
+}
 
 /* ============================================================
    Камеры

@@ -9,6 +9,9 @@ ssh-private.key
 id_rsa*
 id_ed25519*
 
+# данные бэкенда сигналинга (SQLite) — на проде живут вне репозитория
+data/
+
 # зависимости / служебное
 node_modules/
 Thumbs.db

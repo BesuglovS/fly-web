@@ -1417,6 +1417,8 @@ function renderStart1(){
     <div class="st-modes">
       <button type="button" class="st-mode" data-target="lessons">🎯 Обучающие упражнения
         <small>15 уровней: взлёт, висение, слалом, гонка, отказ мотора…</small></button>
+      <button type="button" class="st-mode" data-target="races">🏁 Гонки на время
+        <small>Трассы по мотивам MultiGP: серпантин, цунами, спираль…</small></button>
       <button type="button" class="st-mode" data-target="free">🛩️ Свободный полёт
         <small>Просто летайте: Луг, Город или Каньон</small></button>
     </div>
@@ -1487,14 +1489,32 @@ function renderStart2(){
       });
     });
     document.getElementById('stBack').addEventListener('click', ()=> showStart(1));
+  } else if(stTarget === 'races'){
+    stCardEl.innerHTML = `
+      <p class="st-title">Гонки на время</p>
+      <p class="st-sub">Шаг 2 из 2 — выберите трассу</p>
+      <div class="st-levels">
+        ${LEVELS.map((lv,i)=>({lv,i})).filter(o=>o.lv.race).map(({lv,i})=>
+          `<button type="button" data-idx="${i}">🏁 ${lv.name}<small>${lv.brief}</small></button>`).join('')}
+      </div>
+      <div class="st-foot">
+        <button type="button" class="st-back" id="stBack">← Назад</button>
+      </div>`;
+    stCardEl.querySelectorAll('button[data-idx]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        hideStart();
+        loadLevel(parseInt(btn.dataset.idx,10));
+      });
+    });
+    document.getElementById('stBack').addEventListener('click', ()=> showStart(1));
   } else {
     stCardEl.innerHTML = `
       <p class="st-title">Обучающие упражнения</p>
       <p class="st-sub">Шаг 2 из 2 — выберите уровень</p>
       <div class="st-levels">
-        ${LEVELS.map((lv,i)=>
+        ${LEVELS.map((lv,i)=>({lv,i})).filter(o=>!o.lv.race).map(({lv,i},n)=>
           `<button type="button" data-idx="${i}" class="${i===currentLevelIndex?'active':''}">
-            ${i+1}. ${lv.name}<small>${lv.brief}</small></button>`).join('')}
+            ${n+1}. ${lv.name}<small>${lv.brief}</small></button>`).join('')}
       </div>
       <div class="st-foot">
         <button type="button" class="st-back" id="stBack">← Назад</button>
@@ -2639,10 +2659,12 @@ function updateAcroPhysics(dt, lx, ly, rx, ry, throttle, bf){
      pitch — вокруг поперечной (X), roll — вокруг продольной (Z) */
   _dq.setFromEuler(_e.set(pitchRate*dt, 0, rollRate*dt, 'XYZ'));
   state.quat.multiply(_dq);
-  /* рыскание — вокруг МИРОВОЙ вертикали (снос при отказе мотора тоже здесь) */
+  /* рыскание — вокруг ЛОКАЛЬНОЙ вертикали корпуса (Y=up), поэтому наклон
+     учитывается: при крене/тангаже рыскание уводит нос по конусу (снос
+     `biasYaw` при отказе мотора — тоже в локальной оси) */
   if(yawRate !== 0){
     _yawQ.setFromAxisAngle(Y_AXIS, yawRate*dt);
-    state.quat.premultiply(_yawQ);
+    state.quat.multiply(_yawQ);
   }
   state.quat.normalize();
 
@@ -2975,10 +2997,12 @@ function clearLevelRoot(){
     disposeTree(c);
     levelRoot.remove(c);
   }
+  raceAssets = null;   /* общие материалы/геометрии трасс пересоздаются на новый уровень */
 }
 
-function buildGateVisual(g){
+function buildGateVisual(g, race, idx){
   g.done = false; g.timer = 0;
+  if(g.type === 'ring' && race){ buildRaceGate(g, idx); return; }
   const grp = new THREE.Group();
   if(g.type === 'ring'){
     const color = 0x3b9dff;
@@ -3035,6 +3059,143 @@ function buildObstacle(o){
   box.position.set(o.pos[0],o.pos[1],o.pos[2]);
   box.castShadow = true; box.receiveShadow = true;
   levelRoot.add(box);
+}
+
+/* --- детализированные объекты гоночных трасс (MultiGP-стиль) ---
+   Общий кэш материалов/геометрий живёт в пределах одной сборки уровня:
+   clearLevelRoot() сбрасывает его, а disposeTree() освобождает ресурсы. */
+let raceAssets = null;
+function makeTextTexture(text, w, h, bg, fg, font){
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  if(bg){ g.fillStyle = bg; g.fillRect(0, 0, w, h); }
+  g.font = font; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.lineWidth = Math.max(3, h*0.07); g.strokeStyle = 'rgba(10,14,20,.85)';
+  g.strokeText(text, w/2, h/2+2);
+  g.fillStyle = fg; g.fillText(text, w/2, h/2+2);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+function getRaceAssets(){
+  if(raceAssets) return raceAssets;
+  const s = 128, n = 8, c = document.createElement('canvas'); c.width = c.height = s;
+  const g = c.getContext('2d');
+  g.fillStyle = '#f4f7fb'; g.fillRect(0, 0, s, s);
+  g.fillStyle = '#12161c';
+  const q = s/n;
+  for(let y=0;y<n;y++) for(let x=0;x<n;x++) if((x+y)&1) g.fillRect(x*q, y*q, q, q);
+  const checker = new THREE.CanvasTexture(c); checker.colorSpace = THREE.SRGBColorSpace;
+  raceAssets = {
+    checker,
+    pole:      new THREE.MeshStandardMaterial({ color:0xe8eef7, roughness:.6, metalness:.1 }),
+    cone:      new THREE.MeshStandardMaterial({ color:0xff6a2b, roughness:.75 }),
+    coneBand:  new THREE.MeshStandardMaterial({ color:0xf4f7fb, roughness:.75 }),
+    flagRed:   new THREE.MeshStandardMaterial({ color:0xff5a3c, roughness:.8, side:THREE.DoubleSide }),
+    flagWhite: new THREE.MeshStandardMaterial({ color:0xf4f7fb, roughness:.8, side:THREE.DoubleSide }),
+    pillar:    new THREE.MeshStandardMaterial({ color:0x2b313c, roughness:.6, metalness:.25 }),
+    poleGeo:   new THREE.CylinderGeometry(0.05, 0.05, 3.2, 6),
+    flagGeo:   new THREE.PlaneGeometry(1.05, 0.65),
+    coneGeo:   new THREE.ConeGeometry(0.42, 0.95, 10),
+    bandGeo:   new THREE.TorusGeometry(0.24, 0.06, 6, 14),
+  };
+  return raceAssets;
+}
+/* Квадратные ворота как на реальных трассах: рама, косынки, сетка,
+   шахматный флаг сверху и номер ворот. */
+function buildRaceGate(g, idx){
+  const r = g.r, t = 0.28, A = getRaceAssets();
+  g.baseColor = 0xffb03a;
+  g.mat = new THREE.MeshStandardMaterial({ color:g.baseColor, emissive:0xff7a00, emissiveIntensity:.35, roughness:.45, metalness:.15 });
+  g.netMat = new THREE.MeshBasicMaterial({ color:0x3b9dff, transparent:true, opacity:.13, side:THREE.DoubleSide, depthWrite:false });
+  const grp = new THREE.Group();
+  const postGeo = new THREE.BoxGeometry(t, r*2 + t*2, t);
+  const barGeo  = new THREE.BoxGeometry(r*2 + t*2, t, t);
+  const parts = [[postGeo,-(r+t/2),0],[postGeo,(r+t/2),0],[barGeo,0,(r+t/2)],[barGeo,0,-(r+t/2)]];
+  for(const [geo,x,y] of parts){
+    const m = new THREE.Mesh(geo, g.mat);
+    m.position.set(x, y, 0); m.castShadow = true; grp.add(m);
+  }
+  const gGeo = new THREE.BoxGeometry(t*1.25, t*1.25, t*1.25);
+  for(const sx of [-1,1]) for(const sy of [-1,1]){
+    const gu = new THREE.Mesh(gGeo, g.mat);
+    gu.position.set(sx*(r-t*0.1), sy*(r-t*0.1), 0); grp.add(gu);
+  }
+  const net = new THREE.Mesh(new THREE.PlaneGeometry(r*2, r*2), g.netMat);
+  net.renderOrder = 2; grp.add(net);
+  const banner = new THREE.Mesh(
+    new THREE.PlaneGeometry(r*2 + t*2, 0.7),
+    new THREE.MeshBasicMaterial({ map:A.checker, side:THREE.DoubleSide })
+  );
+  banner.position.set(0, r + t + 0.45, 0.03); grp.add(banner);
+  const label = makeTextTexture(String(idx+1), 128, 128, null, '#ffe066', 'bold 80px sans-serif');
+  const plate = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.95, 0.95),
+    new THREE.MeshBasicMaterial({ map:label, transparent:true, depthWrite:false, side:THREE.DoubleSide })
+  );
+  plate.position.set(0, r + t + 1.2, 0.05); grp.add(plate);
+  grp.position.set(g.pos[0], g.pos[1], g.pos[2]);
+  grp.rotation.y = g.faceYaw || 0;
+  levelRoot.add(grp);
+  g.visual = grp;
+}
+function makeFlag(x, z, flagMat){
+  const A = getRaceAssets();
+  const grp = new THREE.Group();
+  const pole = new THREE.Mesh(A.poleGeo, A.pole); pole.position.y = 1.6; pole.castShadow = true; grp.add(pole);
+  const flag = new THREE.Mesh(A.flagGeo, flagMat); flag.position.set(0.58, 2.75, 0); grp.add(flag);
+  grp.position.set(x, 0, z);
+  levelRoot.add(grp);
+}
+function makeCone(x, z){
+  const A = getRaceAssets();
+  const cone = new THREE.Mesh(A.coneGeo, A.cone); cone.position.set(x, 0.48, z); cone.castShadow = true; levelRoot.add(cone);
+  const band = new THREE.Mesh(A.bandGeo, A.coneBand); band.rotation.x = Math.PI/2; band.position.set(x, 0.46, z); levelRoot.add(band);
+}
+/* Стартово-финишная арка над центральной площадкой. */
+function buildStartGantry(){
+  const A = getRaceAssets();
+  const H = 6.4, W = 10.4, ps = 0.42;
+  const pillarGeo = new THREE.BoxGeometry(ps, H, ps);
+  for(const sx of [-1,1]){
+    const p = new THREE.Mesh(pillarGeo, A.pillar);
+    p.position.set(sx*W/2, H/2, 0); p.castShadow = true; levelRoot.add(p);
+  }
+  const beam = new THREE.Mesh(new THREE.BoxGeometry(W+ps, 0.5, 0.5), A.pillar);
+  beam.position.set(0, H, 0); beam.castShadow = true; levelRoot.add(beam);
+  const tex = makeTextTexture('СТАРТ · ФИНИШ', 512, 96, '#0d1117', '#ffe066', 'bold 54px sans-serif');
+  const banner = new THREE.Mesh(
+    new THREE.PlaneGeometry(W, 1.5),
+    new THREE.MeshBasicMaterial({ map:tex, transparent:true, side:THREE.DoubleSide })
+  );
+  banner.position.set(0, H-1.1, 0.3); levelRoot.add(banner);
+}
+/* Флажки у ворот и конусы вдоль гоночной линии. */
+function buildRaceProps(lv){
+  buildStartGantry();
+  const gates = lv.gates || [];
+  const A = getRaceAssets();
+  const flagMats = [A.flagRed, A.flagWhite];
+  let fi = 0;
+  for(const g of gates){
+    if(g.type !== 'ring') continue;
+    const off = (g.r||3) + 1.4, th = g.faceYaw || 0;
+    const ox = Math.cos(th)*off, oz = -Math.sin(th)*off;
+    makeFlag(g.pos[0]-ox, g.pos[2]-oz, flagMats[fi%2]);
+    makeFlag(g.pos[0]+ox, g.pos[2]+oz, flagMats[(fi+1)%2]);
+    fi++;
+  }
+  for(let i=1;i<gates.length;i++){
+    const a = gates[i-1].pos, b = gates[i].pos;
+    const dx = b[0]-a[0], dz = b[2]-a[2];
+    const len = Math.hypot(dx, dz);
+    if(len < 2) continue;
+    const steps = Math.max(1, Math.floor(len/9));
+    for(let s=1;s<steps;s++){
+      const u = s/steps;
+      const x = a[0]+dx*u, z = a[2]+dz*u;
+      if(Math.hypot(x, z) < 6) continue;
+      makeCone(x, z);
+    }
+  }
 }
 
 /* --- описания уровней (возрастающая сложность) --- */
@@ -3211,6 +3372,80 @@ const LEVELS = [
       { type:'land', pos:[0,GROUND_REST,34], r:3.4, maxSpeed:1.6 },
     ],
   },
+  /* --- трассы-гонки на время (по мотивам MultiGP Universal Time Trial):
+     компактные круги, старт и финиш — посадочная площадка в центре --- */
+  {
+    name:'Серпантин (UTT-1)',
+    brief:'Змейка по мотивам MultiGP UTT-1: три длинных прохода и быстрый возврат. Норматив — 55 с, три звезды — до 36 с.',
+    start:{x:0,y:GROUND_REST,z:0,yaw:0},
+    race:true, map:'meadow',
+    timeLimit:85,
+    gates:[
+      { type:'ring', pos:[  0,5,16], r:2.9, faceYaw: 0 },
+      { type:'ring', pos:[ 22,5,16], r:2.9, faceYaw: Math.PI/2 },
+      { type:'ring', pos:[ 22,5,32], r:2.9, faceYaw: 0 },
+      { type:'ring', pos:[  0,5,32], r:2.9, faceYaw:-Math.PI/2 },
+      { type:'ring', pos:[  0,6,48], r:2.9, faceYaw: 0 },
+      { type:'ring', pos:[ 22,6,48], r:2.9, faceYaw: Math.PI/2 },
+      { type:'ring', pos:[ 22,6,62], r:2.9, faceYaw: 0 },
+      { type:'ring', pos:[-16,6,62], r:2.9, faceYaw:-Math.PI/2 },
+      { type:'ring', pos:[-16,5,24], r:2.9, faceYaw: Math.PI },
+      { type:'land', pos:[0,GROUND_REST,0], r:3.2, maxSpeed:2.2 },
+    ],
+  },
+  {
+    name:'Цунами (UTT-2)',
+    brief:'Петля с длинной прямой и пикированием сквозь вертикальные ворота (MultiGP UTT-2). Три звезды — до 29 с.',
+    start:{x:0,y:GROUND_REST,z:0,yaw:0},
+    race:true, map:'canyon',
+    timeLimit:70,
+    gates:[
+      { type:'ring', pos:[  0,4,16], r:2.9, faceYaw: 0 },
+      { type:'ring', pos:[-14,4,30], r:2.9, faceYaw:-0.79 },
+      { type:'ring', pos:[  0,4,42], r:2.9, faceYaw: 0.86 },
+      { type:'ring', pos:[  0,10,54], r:2.7, faceYaw: 0 },
+      { type:'ring', pos:[  0,16,54], r:2.7, faceYaw: 0 },
+      { type:'ring', pos:[ 16,6,44], r:2.8, faceYaw: 2.13 },
+      { type:'ring', pos:[ 14,4,22], r:2.9, faceYaw:-3.05 },
+      { type:'land', pos:[0,GROUND_REST,0], r:3.2, maxSpeed:2.2 },
+    ],
+  },
+  {
+    name:'Спираль (UTT-5)',
+    brief:'Раковина Nautilus: ворота закручиваются внутрь с постоянным снижением (MultiGP UTT-5). Три звезды — до 34 с.',
+    start:{x:0,y:GROUND_REST,z:0,yaw:0},
+    race:true, map:'meadow',
+    timeLimit:80,
+    gates:[
+      { type:'ring', pos:[ 22,8,  6], r:3.0, faceYaw: 1.30 },
+      { type:'ring', pos:[ 18,8, 22], r:2.9, faceYaw:-0.25 },
+      { type:'ring', pos:[  2,8, 32], r:2.8, faceYaw:-1.01 },
+      { type:'ring', pos:[-14,8, 26], r:2.7, faceYaw:-1.93 },
+      { type:'ring', pos:[-22,8,  8], r:2.6, faceYaw:-2.72 },
+      { type:'ring', pos:[-16,8, -8], r:2.5, faceYaw: 2.78 },
+      { type:'ring', pos:[ -2,7,-16], r:2.4, faceYaw: 2.09 },
+      { type:'ring', pos:[ 10,6, -8], r:2.4, faceYaw: 0.98 },
+      { type:'land', pos:[0,GROUND_REST,0], r:3.2, maxSpeed:2.2 },
+    ],
+  },
+  {
+    name:'Высокое напряжение (UTT-4)',
+    brief:'Городской слалом со сменой направления между домами и разворотом домой (MultiGP UTT-4). Три звезды — до 34 с.',
+    start:{x:0,y:GROUND_REST,z:0,yaw:0},
+    race:true, map:'city',
+    timeLimit:80,
+    gates:[
+      { type:'ring', pos:[  0,5,14], r:2.9, faceYaw: 0 },
+      { type:'ring', pos:[-12,6,26], r:2.8, faceYaw:-0.79 },
+      { type:'ring', pos:[ 12,7,30], r:2.8, faceYaw: 1.41 },
+      { type:'ring', pos:[-10,8,44], r:2.7, faceYaw:-1.00 },
+      { type:'ring', pos:[ 14,6,50], r:2.7, faceYaw: 1.33 },
+      { type:'ring', pos:[  0,5,64], r:2.9, faceYaw:-0.79 },
+      { type:'ring', pos:[-16,6,50], r:2.8, faceYaw:-2.29 },
+      { type:'ring', pos:[-14,5,22], r:2.9, faceYaw: 3.07 },
+      { type:'land', pos:[0,GROUND_REST,0], r:3.2, maxSpeed:2.2 },
+    ],
+  },
   {
     name:'Свободный полёт',
     brief:'Соберите 5 колец в любом порядке. Никаких ограничений — летайте свободно.',
@@ -3225,6 +3460,8 @@ const LEVELS = [
     ],
   },
 ];
+const RACE_TOTAL   = LEVELS.filter(l => l.race).length;
+const LESSON_TOTAL = LEVELS.length - RACE_TOTAL;
 
 /* --- гидирующая стрелка --- */
 const guideArrow = new THREE.Group();
@@ -3266,6 +3503,12 @@ function updateGateHighlight(t){
       g.mat.emissiveIntensity = 0.22;
       if(g.mat.transparent) g.mat.opacity = 0.7;
       if(g.zoneMat) g.zoneMat.opacity = 0.09;
+    }
+    if(g.netMat){
+      g.netMat.color.copy(g.mat.color);
+      if(g.done) g.netMat.opacity = 0.05;
+      else if(g === active) g.netMat.opacity = 0.24 + 0.14*pulse;
+      else g.netMat.opacity = 0.12;
     }
   }
 }
@@ -3312,35 +3555,72 @@ function makeRock(x, z, s=1){
   levelRoot.add(rock);
 }
 
-function buildMapDecor(kind){
+/* Квадрат расстояния от точки (ax,az) до отрезка (px,pz)-(qx,qz). */
+function segDist2(px, pz, qx, qz, ax, az){
+  const dx = qx-px, dz = qz-pz;
+  const l2 = dx*dx + dz*dz;
+  let t = l2 > 0 ? ((ax-px)*dx + (az-pz)*dz) / l2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  const cx = px + dx*t, cz = pz + dz*t;
+  return (ax-cx)*(ax-cx) + (az-cz)*(az-cz);
+}
+/* Коридор вдоль трассы: точка свободна, если она дальше `clear` от любой
+   цели и от отрезков между последовательными целями. Без списка целей —
+   свободно везде (обычный декор карты). */
+function makeDecorClear(gates, clear){
+  if(!gates || !gates.length) return ()=>true;
+  const pts = gates.map(g=>[g.pos[0], g.pos[2]]);
+  const c2 = clear*clear;
+  return (x, z)=>{
+    for(let i=0;i<pts.length;i++){
+      const dx = x-pts[i][0], dz = z-pts[i][1];
+      if(dx*dx + dz*dz < c2) return false;
+      if(i > 0 && segDist2(pts[i-1][0], pts[i-1][1], pts[i][0], pts[i][1], x, z) < c2) return false;
+    }
+    return true;
+  };
+}
+
+function buildMapDecor(kind, gates){
   seed = (kind === 'city') ? 4242 : (kind === 'canyon') ? 90210 : 1337;
+  const clear = makeDecorClear(gates, kind === 'city' ? 15 : kind === 'canyon' ? 15 : 9);
   if(kind === 'city'){
     /* кварталы — сохраняем центр свободным для площадки */
     for(let i=0;i<30;i++){
       const a = rnd()*Math.PI*2, r = 26 + rnd()*190;
       const x = Math.cos(a)*r, z = Math.sin(a)*r;
-      makeBuildingRow(x, z, 8+rnd()*7, 9+rnd()*22, 8+rnd()*7,
-        [0x55617a,0x4d5d6e,0x5d6a83,0x465066][rnd()*4|0]);
+      const w = 8+rnd()*7, h = 9+rnd()*22, d = 8+rnd()*7;
+      const col = [0x55617a,0x4d5d6e,0x5d6a83,0x465066][rnd()*4|0];
+      if(!clear(x, z)) continue;
+      makeBuildingRow(x, z, w, h, d, col);
     }
     for(let i=0;i<10;i++){
       const a = rnd()*Math.PI*2, r = 22 + rnd()*120;
-      levelRoot.add(makeTree(Math.cos(a)*r, Math.sin(a)*r, 0.8+rnd()*0.8));
+      const x = Math.cos(a)*r, z = Math.sin(a)*r;
+      if(!clear(x, z)) continue;
+      levelRoot.add(makeTree(x, z, 0.8+rnd()*0.8));
     }
   } else if(kind === 'canyon'){
     for(let i=0;i<42;i++){
       const a = rnd()*Math.PI*2, r = 18 + rnd()*200;
-      makeRock(Math.cos(a)*r, Math.sin(a)*r, 0.9+rnd()*1.5);
+      const x = Math.cos(a)*r, z = Math.sin(a)*r;
+      if(!clear(x, z)) continue;
+      makeRock(x, z, 0.9+rnd()*1.5);
     }
     /* редкие деревья в расщелинах */
     for(let i=0;i<12;i++){
       const a = rnd()*Math.PI*2, r = 25 + rnd()*160;
-      levelRoot.add(makeTree(Math.cos(a)*r, Math.sin(a)*r, 0.7+rnd()*0.9));
+      const x = Math.cos(a)*r, z = Math.sin(a)*r;
+      if(!clear(x, z)) continue;
+      levelRoot.add(makeTree(x, z, 0.7+rnd()*0.9));
     }
   } else {
     /* луг — исходная сцена */
     for(let i=0;i<46;i++){
       const a = rnd()*Math.PI*2, r = 20 + rnd()*170;
-      levelRoot.add(makeTree(Math.cos(a)*r, Math.sin(a)*r, 0.8+rnd()*1.4));
+      const x = Math.cos(a)*r, z = Math.sin(a)*r;
+      if(!clear(x, z)) continue;
+      levelRoot.add(makeTree(x, z, 0.8+rnd()*1.4));
     }
   }
 }
@@ -3349,8 +3629,10 @@ function buildMapDecor(kind){
 function buildLevelScene(lv){
   clearLevelRoot();
   (lv.obstacles||[]).forEach(buildObstacle);
-  (lv.gates||[]).forEach(buildGateVisual);
+  (lv.gates||[]).forEach((g,i)=>buildGateVisual(g, !!lv.race, i));
   if(lv.free) buildMapDecor(cfg.map);
+  else if(lv.map) buildMapDecor(lv.map, lv.gates);
+  if(lv.race) buildRaceProps(lv);
 }
 
 /* --- загрузка / перезапуск / завершение --- */
@@ -3411,6 +3693,7 @@ function completeGate(g){
     g.mat.emissiveIntensity = .7;
     if('opacity' in g.mat) g.mat.opacity = .5;
   }
+  if(g.netMat) g.netMat.opacity = .05;
   levelState.progress++;
   levelState.hoverTime = 0; levelState.headingTime = 0;
   if(levelState.progress >= LEVELS[currentLevelIndex].gates.length) completeLevel();
@@ -3611,7 +3894,8 @@ function objectiveText(lv){
 function updateLevelBar(){
   if(!levelState) return;
   const lv = LEVELS[currentLevelIndex];
-  lvNameEl.textContent = `Уровень ${currentLevelIndex+1}/${LEVELS.length} — ${lv.name}`;
+  const catIdx = LEVELS.slice(0, currentLevelIndex+1).filter(l => !!l.race === !!lv.race).length;
+  lvNameEl.textContent = `${lv.race ? 'Трасса' : 'Уровень'} ${catIdx}/${lv.race ? RACE_TOTAL : LESSON_TOTAL} — ${lv.name}`;
   let obj = objectiveText(lv);
   if(lv.emergency){
     obj = levelState.emergencyAt == null
@@ -3641,9 +3925,11 @@ function updateLevelBar(){
 
 /* --- меню уровней --- */
 function updateLevelMenu(){
-  levelmenuEl.innerHTML = LEVELS.map((lv,i)=>
-    `<button data-idx="${i}" class="${i===currentLevelIndex?'active':''}">${lv.name}<small>Уровень ${i+1} · ${lv.brief}</small></button>`
-  ).join('');
+  let li = 0, ri = 0;
+  levelmenuEl.innerHTML = LEVELS.map((lv,i)=>{
+    const label = lv.race ? `Трасса ${++ri}/${RACE_TOTAL}` : `Уровень ${++li}/${LESSON_TOTAL}`;
+    return `<button data-idx="${i}" class="${i===currentLevelIndex?'active':''}">${lv.name}<small>${label} · ${lv.brief}</small></button>`;
+  }).join('');
 }
 function openLevelMenu(){ levelmenuEl.classList.add('open'); }
 function closeLevelMenu(){ levelmenuEl.classList.remove('open'); }

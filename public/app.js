@@ -1573,13 +1573,29 @@ const netStepsEl  = document.getElementById('netSteps');
 const NET_API     = '/api/signal';
 const NET_MAX     = 4;
 const NET_POLL_MS = 2000;
-const NET_MAP_NAMES = { meadow:'Луг', city:'Город', canyon:'Каньон' };
+const NET_MAP_NAMES = { meadow:'Луг', city:'Город', canyon:'Каньон', forest:'Лесная дорога' };
 /* Точки спавна по слоту игрока (0..7): сетка 2×4, чтобы не появляться в одной точке. */
 const NET_SPAWNS = [
   { x:-5.25, z:-2.5 }, { x:-1.75, z:-2.5 }, { x:1.75, z:-2.5 }, { x:5.25, z:-2.5 },
   { x:-5.25, z: 2.5 }, { x:-1.75, z: 2.5 }, { x:1.75, z: 2.5 }, { x:5.25, z: 2.5 },
 ];
-function netSpawn(slot){ return NET_SPAWNS[slot] || { x:0, z:0 }; }
+/* Спавн по слоту: для лесной трассы — на дороге у стартовой арки, по рельефу;
+   для плоских карт — прежняя сетка у нуля. Возвращает {x,y,z}. */
+function netSpawn(slot){
+  slot = Math.max(0, Number(slot) || 0);
+  if(netRoom.info && netRoom.info.map === 'forest'){
+    const t0 = -1/80, p = forestPath(t0), tg = forestTangent(t0);
+    const nx = tg.z, nz = -tg.x;          /* нормаль к дороге */
+    const col = slot % 4, row = (slot / 4) | 0;
+    const lat = -3.0 + col * 2.0;         /* поперёк дороги: -3,-1,1,3 */
+    const lon = -row * 3.6;               /* второй ряд — позади старта */
+    const x = p.x + nx*lat + tg.x*lon;
+    const z = p.z + nz*lat + tg.z*lon;
+    return { x, z, y: GROUND_REST + forestTerrain(x, z) };
+  }
+  const s = NET_SPAWNS[slot] || { x:0, z:0 };
+  return { x:s.x, z:s.z, y:GROUND_REST };
+}
 
 /* LAN-релей: включается на http (локальная сеть), либо по ?lan / ?relay=host:port.
    В этом режиме транспорт — один WebSocket к релею (звезда), без auth-web/TURN. */
@@ -1692,6 +1708,7 @@ function relayConnect(addr){
       for(const id of Array.from(netRoom.peers.keys())) removePeer(id);
       netRoom.active = false;
       netRoom.info = null;
+      netRaceStop();
     }
     netSetStatus('○ Релей отключён', false);
     renderNetBody();
@@ -1722,6 +1739,7 @@ function relayOnMessage(data){
     }
     return;
   }
+  if(m.t === 'ready' || m.t === 'go' || m.t === 'reset' || m.t === 'race'){ netRaceHandle(m.id, m); return; }
   if(m.t === 'error'){ netSetStatus('⚠ ' + m.message, false); return; }
 }
 function syncNetMeta(m){
@@ -1771,7 +1789,7 @@ const netRoom = {
   peers: new Map(),            // userId -> peer
   info: null,                  // данные комнаты с сервера
   lobbyRooms: [],
-  maps: ['meadow', 'city', 'canyon'],
+  maps: ['meadow', 'city', 'canyon', 'forest'],
   maxOptions: [2, 4, 6, 8],
   maxHard: 8,
   appliedMap: '',
@@ -1952,7 +1970,7 @@ function renderRoom(){
       '<p class="net-h3">Режим полёта</p><div class="net-maps">' + modeBtns + '</div>' +
       '<p class="net-h3">Участников (макс.)</p><div class="net-maps">' + sizeBtns + '</div>' +
       '<div class="gp-btns net-row">' +
-        (info.started ? '<button type="button" disabled>● Игра идёт</button>'
+        (info.started ? '<button type="button" id="netStart">🔁 Перезапустить гонку</button>'
                       : '<button type="button" id="netStart">🚀 Начать игру</button>') +
         '<button type="button" id="netLeave" class="net-ghost">Выйти</button>' +
       '</div>';
@@ -2070,6 +2088,7 @@ function stopNet(){
   netRoom.pending = [];
   netRoom.control = {};
   netRoom.active = false;
+  netRaceStop();
   netRoom.polling = false;
   netRoom.info = null;
   if(NET_RELAY){
@@ -2168,7 +2187,15 @@ function hostSetMax(max){
   if(max < (1 + netRoom.peers.size)) return; // нельзя меньше числа текущих участников
   hostControl({ max });
 }
-function hostStart(){ hostControl({ started:true }); }
+function hostStart(){
+  /* повторное «Начать игру» в идущей гонке — общий перезапуск */
+  if(netRoom.info && netRoom.info.started){
+    netRaceReset();
+    netBroadcast({ t:'reset' });
+    return;
+  }
+  hostControl({ started:true });
+}
 
 /* Применить карту/режим хоста: у хоста — сразу, у гостей — при старте. */
 function applyNetGame(force){
@@ -2178,14 +2205,17 @@ function applyNetGame(force){
   const started = !!info.started;
   if(!(started || (force && isHost))) return;
 
+  let loadedNow = false;
   if(netRoom.appliedMap !== info.map){
     netRoom.appliedMap = info.map;
-    cfg.map = info.map;
-    saveCfg();
+    if(info.map !== 'forest'){ cfg.map = info.map; saveCfg(); }   /* 'forest' — только сетевая трасса */
     hideStart();
-    const fi = LEVELS.findIndex(l => l.free);
-    loadLevel(fi >= 0 ? fi : LEVELS.length - 1);
+    const li = (info.map === 'forest')
+      ? LEVELS.findIndex(l => l.terrain === 'forest')
+      : LEVELS.findIndex(l => l.free);
+    loadLevel(li >= 0 ? li : LEVELS.length - 1);
     netPlaceLocalAtSpawn();
+    loadedNow = true;
   }
   const mode = (info.params && info.params.mode) || 'angle';
   if(netRoom.appliedMode !== mode){
@@ -2193,21 +2223,199 @@ function applyNetGame(force){
     setFlightMode(mode);
   }
 
-  /* Как только игра началась — переходим в неё, окно закрываем сами. */
+  /* Как только игра началась — переходим в неё, окно закрываем сами.
+     Для трасс на время у хоста перезагружаем уровень, чтобы таймер стартовал
+     ровно с началом игры, а не с выбора карты (у гостей уровень только что загружен). */
   if(started && !netRoom.startedSeen){
     netRoom.startedSeen = true;
+    if(!loadedNow){ loadLevel(currentLevelIndex); netPlaceLocalAtSpawn(); }   /* чистый старт */
     if(netModalEl.classList.contains('show')) closeNetModal();
+    netRaceBegin();
   }
 }
 
 /* Поставить местный дрон в персональную точку спавна (не в общий ноль). */
 function netPlaceLocalAtSpawn(){
   const s = netSpawn(netRoom.selfSlot);
-  state.pos.set(s.x, GROUND_REST, s.z);
+  const lv = LEVELS[currentLevelIndex] || {};
+  state.pos.set(s.x, s.y, s.z);
   state.vel.set(0, 0, 0);
-  state.yaw = 0; state.pitch = 0; state.roll = 0;
-  state.quat.set(0, 0, 0, 1);
-  camera.position.set(s.x, GROUND_REST + 3.4, s.z - 9);
+  state.yaw = (lv.start && lv.start.yaw) || 0;
+  state.pitch = 0; state.roll = 0;
+  state.quat.setFromEuler(_e.set(0, state.yaw, 0, 'YXZ'));
+  camera.position.set(s.x, s.y + 3.4, s.z - 9);
+}
+
+/* ============================================================
+   СЕТЕВАЯ ГОНКА: общий старт (ready → go → отсчёт), общий прогресс
+   и итоговое табло. Сообщения идут тем же каналом, что и состояние
+   (DataChannel в mesh, WebSocket в LAN-релее).
+   ============================================================ */
+const netRace = {
+  active: false,
+  phase: 'idle',       // idle | waiting | countdown | running | done
+  countdown: 0,
+  waitUntil: 0,
+  ready: new Set(),    // id участников, подтвердивших готовность (для хоста)
+  results: new Map(),  // id -> { name, prog, time, done, failed, fin }
+  lastSent: 0,
+  selfFailed: false,
+};
+const countdownEl = document.getElementById('countdown');
+const raceBoardEl = document.getElementById('raceBoard');
+
+function netBroadcast(obj){
+  if(NET_RELAY){ relaySend(obj); return; }
+  const payload = JSON.stringify(obj);
+  for(const p of netRoom.peers.values()){
+    if(p.open && p.dc && p.dc.readyState === 'open'){ try{ p.dc.send(payload); }catch(_){} }
+  }
+}
+function netRaceIsHost(){ return !!(netRoom.info && netRoom.selfId === netRoom.info.host_user_id); }
+function netRaceTotal(){ const lv = LEVELS[currentLevelIndex]; return (lv && lv.gates) ? lv.gates.length : 0; }
+function netRaceStop(){
+  netRace.active = false; netRace.phase = 'idle';
+  netRace.ready.clear(); netRace.results.clear();
+  if(raceBoardEl) raceBoardEl.classList.remove('show');
+  if(countdownEl) countdownEl.classList.remove('show');
+}
+/* Уровень загружен, все на старте — начинаем общий отсчёт. */
+function netRaceBegin(){
+  if(!netRoom.active || !netRoom.info || !netRoom.info.started) return;
+  netRace.active = true;
+  netRace.results.clear(); netRace.ready.clear();
+  netRace.selfFailed = false;
+  netRace.phase = 'waiting';
+  netRace.waitUntil = performance.now() + (netRaceIsHost() ? 6000 : 9000);   /* не ждём «готов» вечно */
+  netRaceSendState(true);
+  netBroadcast({ t:'ready', name: netRoom.selfName });
+  netRaceMaybeGo();
+}
+function netRaceMaybeGo(){
+  if(!netRaceIsHost() || netRace.phase !== 'waiting') return;
+  if(netRace.ready.size >= netRoom.peers.size) netRaceGo();
+}
+function netRaceGo(){
+  if(netRace.phase === 'countdown' || netRace.phase === 'running') return;
+  netRace.phase = 'countdown';
+  netRace.countdown = 3.2;
+  if(netRaceIsHost()) netBroadcast({ t:'go', sec: netRace.countdown });
+  renderCountdown();
+}
+/* Полный перезапуск гонки (по кнопке хоста). */
+function netRaceReset(){
+  netRace.results.clear(); netRace.ready.clear();
+  netRace.selfFailed = false;
+  loadLevel(currentLevelIndex);
+  netPlaceLocalAtSpawn();
+  netRaceBegin();
+}
+function netRaceHandle(fromId, m){
+  if(m.t === 'ready'){
+    if(netRaceIsHost()){ netRace.ready.add(Number(fromId)); netRaceMaybeGo(); }
+    return;
+  }
+  if(m.t === 'go'){
+    if(netRace.phase === 'waiting' || netRace.phase === 'idle'){
+      netRace.active = true;
+      netRace.phase = 'countdown';
+      netRace.countdown = Number(m.sec) || 3.2;
+      renderCountdown();
+    }
+    return;
+  }
+  if(m.t === 'reset'){ netRaceReset(); return; }
+  if(m.t === 'race'){
+    netRace.results.set(Number(fromId), {
+      name: String(m.name || 'Пилот').slice(0, 24),
+      prog: Number(m.prog) || 0,
+      time: Number(m.time) || 0,
+      done: !!m.done,
+      failed: !!m.failed,
+      fin: m.fin != null ? Number(m.fin) : null,
+    });
+    updateRaceBoard();
+    if(netRace.phase === 'done') renderRaceResult();
+    return;
+  }
+}
+function netRaceSendState(force){
+  if(!netRace.active) return;
+  const now = performance.now();
+  if(!force && now - netRace.lastSent < 300) return;
+  netRace.lastSent = now;
+  const ended = !!(levelState && levelState.done);
+  const done = ended && !netRace.selfFailed;
+  const time = levelState ? levelState.elapsed : 0;
+  const rec = { name: netRoom.selfName, prog: levelState ? levelState.progress : 0, time,
+                done, failed: ended && netRace.selfFailed, fin: done ? time : null };
+  netRace.results.set(netRoom.selfId, rec);
+  netBroadcast(Object.assign({ t:'race' }, rec));
+  updateRaceBoard();
+}
+/* Общая сортировка: финишировавшие по времени, затем «в гонке»/DNF по прогрессу. */
+function netRaceSortRows(){
+  const rows = [...netRace.results.entries()].map(([id, r]) => Object.assign({ id }, r));
+  rows.sort((a, b) => {
+    if(a.done !== b.done) return a.done ? -1 : 1;
+    if(a.done) return (a.fin || 0) - (b.fin || 0);
+    if(a.failed !== b.failed) return a.failed ? 1 : -1;
+    return b.prog - a.prog;
+  });
+  return rows;
+}
+function netRaceRowHtml(r, i, total, result){
+  const status = r.done ? (r.fin || 0).toFixed(result ? 2 : 1) + ' с'
+               : r.failed ? 'сход'
+               : r.prog + '/' + total + (result ? ' — в гонке' : '');
+  const meCls = (r.id === netRoom.selfId ? ' me' : '') + (r.done ? ' done' : '');
+  if(result){
+    return '<div class="res-row' + meCls + '"><b>' + (i + 1) + '</b> ' +
+      '<span>' + escapeHtml(r.name) + '</span> <em>' + status + '</em></div>';
+  }
+  return '<div class="rr' + meCls + '">' +
+    '<span class="nm">' + (i + 1) + '. ' + escapeHtml(r.name) + '</span>' +
+    '<span class="tm">' + status + '</span></div>';
+}
+function updateRaceBoard(){
+  if(!raceBoardEl) return;
+  if(!netRace.active || netRace.results.size === 0){ raceBoardEl.classList.remove('show'); return; }
+  const total = netRaceTotal();
+  const rows = netRaceSortRows();
+  const fin = rows.filter(r => r.done).length;
+  raceBoardEl.innerHTML = '<div class="ttl">ГОНКА · финиш ' + fin + '/' + rows.length + '</div>' +
+    rows.map((r, i) => netRaceRowHtml(r, i, total, false)).join('');
+  raceBoardEl.classList.add('show');
+}
+function renderCountdown(){
+  if(!countdownEl) return;
+  if(netRace.phase === 'waiting'){
+    countdownEl.textContent = 'Ожидание игроков…';
+    countdownEl.classList.add('show', 'wait'); return;
+  }
+  if(netRace.phase === 'countdown'){
+    countdownEl.classList.remove('wait');
+    const n = Math.ceil(netRace.countdown);
+    countdownEl.textContent = n > 0 ? String(n) : 'СТАРТ!';
+    countdownEl.classList.add('show'); return;
+  }
+  countdownEl.classList.remove('show');
+}
+/* Итоговое табло гонки (оверлей поверх всего). */
+function showRaceResult(){
+  netRace.phase = 'done';
+  renderRaceResult();
+  overlayEl.classList.add('show');
+  makeCollapsible(overlayEl);
+  paused = true;
+}
+function renderRaceResult(){
+  const total = netRaceTotal();
+  const rows = netRaceSortRows();
+  overlayEl.innerHTML = '<div class="card"><h2>Результаты гонки</h2>' +
+    '<div class="results">' + rows.map((r, i) => netRaceRowHtml(r, i, total, true)).join('') + '</div>' +
+    '<div class="btns"><button data-action="close">Продолжить</button>' +
+    '<button class="primary" data-action="menu">К уровням</button></div></div>';
 }
 
 /* ---------- участники и пары ---------- */
@@ -2234,7 +2442,7 @@ function ensurePeer(userId, name, slot){
       name: name || 'Пилот',
       slot: slot != null ? Number(slot) : 0,
       pc: null, dc: null,
-      targetPos: new THREE.Vector3(s.x, GROUND_REST, s.z),
+      targetPos: new THREE.Vector3(s.x, s.y, s.z),
       targetQuat: new THREE.Quaternion(),
       obj: null, props: [], label: null,
       open: false,
@@ -2301,6 +2509,8 @@ function wirePeerChannel(p, dc){
       }else if(m.t === 'st'){
         p.targetPos.set(m.p[0], m.p[1], m.p[2]);
         p.targetQuat.set(m.q[0], m.q[1], m.q[2], m.q[3]);
+      }else if(m.t === 'ready' || m.t === 'go' || m.t === 'reset' || m.t === 'race'){
+        netRaceHandle(p.userId, m);
       }
     }catch(_){}
   });
@@ -2360,8 +2570,8 @@ function showPeerDrone(p, on){
     p.obj = built.group;
     p.props = built.props;
     const s = netSpawn(p.slot);
-    p.obj.position.set(s.x, GROUND_REST, s.z);
-    p.targetPos.set(s.x, GROUND_REST, s.z);
+    p.obj.position.set(s.x, s.y, s.z);
+    p.targetPos.set(s.x, s.y, s.z);
     p.targetQuat.set(0, 0, 0, 1);
     scene.add(p.obj);
     updatePeerLabel(p);
@@ -2449,6 +2659,7 @@ setInterval(()=>{
 }, 50);
 
 setInterval(()=>{
+  netRaceSendState();
   if(NET_RELAY){
     if(!netRoom.active || !relayReady) return;
     const qr = state.quat;
@@ -2574,6 +2785,19 @@ const _v2 = new THREE.Vector3();
 const _v3 = new THREE.Vector3();
 const _v4 = new THREE.Vector3();
 
+/* --- рельеф ---
+   По умолчанию земля плоская (y=0). Уровень с `terrain:'forest'` задаёт функцию
+   высоты `forestTerrain`, которую используют и физика приземления, и постановка
+   объектов леса. `aglAlt()` — высота над рельефом (AGL) для HUD и целей. */
+let terrainFn = null;
+function groundHeightAt(x, z){ return terrainFn ? terrainFn(x, z) : 0; }
+function aglAlt(){
+  return state.pos.y - GROUND_REST - groundHeightAt(state.pos.x, state.pos.z);
+}
+/* лес: список деревьев и пространственная сетка для быстрых столкновений */
+let forestTrees = [];
+let forestGrid = null;
+
 function updatePhysics(dt){
   /* --- итоговые входы: стики + клавиатура --- */
   const lx = clamp(stickL.x + (keys.KeyD?1:0) - (keys.KeyA?1:0), -1, 1);
@@ -2605,9 +2829,9 @@ function updatePhysics(dt){
   sun.target.updateMatrixWorld();
 
   /* --- пятно-тень --- */
-  shadowBlob.position.set(state.pos.x, 0.02, state.pos.z);
-  const h = clamp(1 - (state.pos.y-GROUND_REST)/26, 0.15, 1);
-  shadowBlob.scale.setScalar(0.7 + (state.pos.y-GROUND_REST)*0.05);
+  shadowBlob.position.set(state.pos.x, groundHeightAt(state.pos.x, state.pos.z) + 0.03, state.pos.z);
+  const h = clamp(1 - (state.pos.y-GROUND_REST - groundHeightAt(state.pos.x, state.pos.z))/26, 0.15, 1);
+  shadowBlob.scale.setScalar(0.7 + (state.pos.y-GROUND_REST - groundHeightAt(state.pos.x, state.pos.z))*0.05);
   shadowBlob.material.opacity = 0.30 * h;
 
   updateCamera(dt);
@@ -2685,12 +2909,126 @@ function updateAcroPhysics(dt, lx, ly, rx, ry, throttle, bf){
   integrateDrone(dt);
 }
 
+/* ============================================================
+   Столкновения: ОТСКОК от препятствий и рамок ворот.
+   Дрон — сфера радиуса DRONE_R; при проникновении выталкиваем его
+   на поверхность и отражаем скорость (с потерей на упругость/трение).
+   Провал уровня за удар не наступает — только гасится/меняется вектор.
+   ============================================================ */
+const DRONE_R       = 0.5;    /* радиус корпуса для столкновений */
+const BOUNCE_REST   = 0.45;   /* упругость отскока (0..1) */
+const BOUNCE_FRIC   = 0.35;   /* потеря касательной скорости */
+const _colN = new THREE.Vector3();
+const _colT = new THREE.Vector3();
+let stadiumSolids = [];   /* AABB-коллайдеры стадиона (собирает buildStadium) */
+
+/* отражение скорости относительно единичной нормали n (наружу поверхности) */
+function bounceOff(n){
+  const vn = state.vel.dot(n);
+  if(vn >= 0) return;                       /* уже расходятся — не отражаем */
+  state.vel.addScaledVector(n, -(1 + BOUNCE_REST) * vn);
+  const vn2 = state.vel.dot(n);
+  _colT.copy(state.vel).addScaledVector(n, -vn2).multiplyScalar(1 - BOUNCE_FRIC);
+  state.vel.copy(_colT).addScaledVector(n, vn2);
+}
+
+/* отскок от прямоугольного препятствия (AABB, ось наименьшего проникновения) */
+function resolveObstacle(o){
+  const [w,h,d] = o.size;
+  const hx = w/2 + DRONE_R, hy = h/2 + DRONE_R, hz = d/2 + DRONE_R;
+  const dx = state.pos.x - o.pos[0], dy = state.pos.y - o.pos[1], dz = state.pos.z - o.pos[2];
+  if(Math.abs(dx) >= hx || Math.abs(dy) >= hy || Math.abs(dz) >= hz) return;
+  const px = hx - Math.abs(dx), py = hy - Math.abs(dy), pz = hz - Math.abs(dz);
+  let nx = 0, ny = 0, nz = 0, pen;
+  if(px <= py && px <= pz){ pen = px; nx = dx < 0 ? -1 : 1; }
+  else if(py <= pz)      { pen = py; ny = dy < 0 ? -1 : 1; }
+  else                   { pen = pz; nz = dz < 0 ? -1 : 1; }
+  state.pos.x += nx*pen; state.pos.y += ny*pen; state.pos.z += nz*pen;
+  _colN.set(nx, ny, nz);
+  bounceOff(_colN);
+}
+
+/* отскок от рамы ворот: квадрат (гонки) или кольцо (упражнения) */
+function resolveGate(g){
+  if(g.type !== 'ring' || !g.pos) return;
+  const r = g.r;
+  const yaw = g.faceYaw || 0, cy = Math.cos(yaw), sy = Math.sin(yaw);
+  const dx = state.pos.x - g.pos[0], dy = state.pos.y - g.pos[1], dz = state.pos.z - g.pos[2];
+  /* локальные оси ворот (поворот на -yaw вокруг Y) */
+  const lx = dx*cy - dz*sy, lz = dx*sy + dz*cy, ly = dy;
+  let nx, ny, barR;
+  if(g.raceGate){
+    barR = 0.14;                            /* половина толщины бруса */
+    if(Math.abs(lx) <= r && Math.abs(ly) <= r){    /* внутри — тянемся к ближайшей стороне */
+      const dR = r - lx, dL = lx + r, dT = r - ly, dB = ly + r;
+      const m = Math.min(dR, dL, dT, dB);
+      nx = lx; ny = ly;
+      if(m === dR) nx = r; else if(m === dL) nx = -r; else if(m === dT) ny = r; else ny = -r;
+    } else { nx = clamp(lx, -r, r); ny = clamp(ly, -r, r); }
+  } else {
+    barR = 0.22;                            /* радиус трубы кольца */
+    const phi = Math.atan2(ly, lx);
+    nx = r*Math.cos(phi); ny = r*Math.sin(phi);
+  }
+  let ox = lx - nx, oy = ly - ny, oz = lz;
+  let dist = Math.hypot(ox, oy, oz);
+  const reach = barR + DRONE_R;
+  if(dist >= reach) return;
+  if(dist < 1e-4){ ox = lx; oy = ly; oz = lz; dist = Math.hypot(ox, oy, oz) || 1; }
+  const nlx = ox/dist, nly = oy/dist, nlz = oz/dist;
+  /* выталкиваем центр дрона на поверхность бруса и возвращаем в мировые оси */
+  const tx = nx + nlx*reach, ty = ny + nly*reach, tz = nlz*reach;
+  state.pos.set(g.pos[0] + tx*cy + tz*sy, g.pos[1] + ty, g.pos[2] - tx*sy + tz*cy);
+  _colN.set(nlx*cy + nlz*sy, nly, -nlx*sy + nlz*cy);
+  bounceOff(_colN);
+}
+
+/* отскок от стволов деревьев: цилиндры, выборка по пространственной сетке */
+const FOREST_CELL = 18;
+function resolveForestTrees(){
+  if(!forestGrid) return;
+  const cx = Math.floor(state.pos.x / FOREST_CELL), cz = Math.floor(state.pos.z / FOREST_CELL);
+  for(let ix = cx-1; ix <= cx+1; ix++) for(let iz = cz-1; iz <= cz+1; iz++){
+    const arr = forestGrid.get(ix + ',' + iz);
+    if(!arr) continue;
+    for(const i of arr){
+      const t = forestTrees[i];
+      const dx = state.pos.x - t.x, dz = state.pos.z - t.z;
+      const reach = t.r + DRONE_R;
+      const d2 = dx*dx + dz*dz;
+      if(d2 >= reach*reach) continue;
+      if(state.pos.y < t.y0 - 0.3 || state.pos.y > t.y1) continue;
+      const d = Math.sqrt(d2) || 1;
+      const nx = dx/d, nz = dz/d;
+      state.pos.x = t.x + nx*reach; state.pos.z = t.z + nz*reach;
+      _colN.set(nx, 0, nz);
+      bounceOff(_colN);
+    }
+  }
+}
+
+function resolveCollisions(){
+  if(!levelState) return;
+  const lv = LEVELS[currentLevelIndex];
+  if(!lv) return;
+  if(lv.obstacles) for(const o of lv.obstacles) resolveObstacle(o);
+  for(const o of stadiumSolids) resolveObstacle(o);   /* борта/трибуны/мачты арены */
+  resolveForestTrees();                                /* стволы деревьев лесной трассы */
+  if(!lv.free){
+    for(const g of lv.gates){
+      if(g.done || g.type !== 'ring') continue;
+      resolveGate(g);
+    }
+  }
+}
+
 /* общее завершение шага: интегрирование, земля, границы, модель */
 function integrateDrone(dt){
   state.pos.addScaledVector(state.vel, dt);
 
-  if(state.pos.y < GROUND_REST){
-    state.pos.y = GROUND_REST;
+  const gY = GROUND_REST + groundHeightAt(state.pos.x, state.pos.z);
+  if(state.pos.y < gY){
+    state.pos.y = gY;
     if(state.vel.y < 0) state.vel.y = 0;
     /* на земле ориентация доворачивается к «ровно на курсе» (и в acro тоже) */
     const gk = Math.min(1, 8*dt);
@@ -2703,6 +3041,8 @@ function integrateDrone(dt){
   }
   state.pos.x = clamp(state.pos.x, -WORLD_LIMIT, WORLD_LIMIT);
   state.pos.z = clamp(state.pos.z, -WORLD_LIMIT, WORLD_LIMIT);
+
+  resolveCollisions();   /* отскок от препятствий и рамок ворот */
 
   /* в acro ограничения уровня по крену не действуют (см. updateLevel) */
   drone.position.copy(state.pos);
@@ -2731,7 +3071,7 @@ const compassArrow = document.getElementById('compassArrow');
 
 function updateHUD(throttle){
   const deg = r => r*180/Math.PI;
-  vAlt.textContent = (state.pos.y - GROUND_REST).toFixed(1) + ' м';
+  vAlt.textContent = aglAlt().toFixed(1) + ' м';
   vSpd.textContent = Math.hypot(state.vel.x, state.vel.z).toFixed(1) + ' м/с';
   vThr.textContent = Math.round(throttle*100) + '%';
   vPitch.textContent = deg(state.pitch).toFixed(0) + '°';
@@ -2932,7 +3272,7 @@ function drawFpvHud(){
   /* ---------- Скорость (слева), высота и вариометр (справа) ---------- */
   const speed = Math.hypot(state.vel.x, state.vel.z);
   const vsi = state.vel.y;
-  const alt = state.pos.y - GROUND_REST;
+  const alt = aglAlt();
   fpvCtx.textAlign = 'left';
   fpvCtx.fillStyle = G;
   fpvCtx.font = '11px system-ui,Segoe UI,Arial';
@@ -2998,10 +3338,14 @@ function clearLevelRoot(){
     levelRoot.remove(c);
   }
   raceAssets = null;   /* общие материалы/геометрии трасс пересоздаются на новый уровень */
+  stadiumSolids = [];  /* объёмные коллайдеры стадиона пересобираются на новый уровень */
+  forestTrees = [];    /* деревья лесной трассы */
+  forestGrid = null;
 }
 
 function buildGateVisual(g, race, idx){
   g.done = false; g.timer = 0;
+  g.raceGate = false;                 /* квадратная рама (гонки) или круглое кольцо */
   if(g.type === 'ring' && race){ buildRaceGate(g, idx); return; }
   const grp = new THREE.Group();
   if(g.type === 'ring'){
@@ -3103,6 +3447,7 @@ function getRaceAssets(){
    шахматный флаг сверху и номер ворот. */
 function buildRaceGate(g, idx){
   const r = g.r, t = 0.28, A = getRaceAssets();
+  g.raceGate = true;
   g.baseColor = 0xffb03a;
   g.mat = new THREE.MeshStandardMaterial({ color:g.baseColor, emissive:0xff7a00, emissiveIntensity:.35, roughness:.45, metalness:.15 });
   g.netMat = new THREE.MeshBasicMaterial({ color:0x3b9dff, transparent:true, opacity:.13, side:THREE.DoubleSide, depthWrite:false });
@@ -3131,7 +3476,10 @@ function buildRaceGate(g, idx){
     new THREE.PlaneGeometry(0.95, 0.95),
     new THREE.MeshBasicMaterial({ map:label, transparent:true, depthWrite:false, side:THREE.DoubleSide })
   );
-  plate.position.set(0, r + t + 1.2, 0.05); grp.add(plate);
+  /* номер развёрнут навстречу пилоту (локальный −Z — откуда он летит) */
+  plate.position.set(0, r + t + 1.2, -0.05);
+  plate.rotation.y = Math.PI;
+  grp.add(plate);
   grp.position.set(g.pos[0], g.pos[1], g.pos[2]);
   grp.rotation.y = g.faceYaw || 0;
   levelRoot.add(grp);
@@ -3196,6 +3544,152 @@ function buildRaceProps(lv){
       makeCone(x, z);
     }
   }
+}
+
+/* ============================================================
+   ЛЕСНАЯ ТРАССА — длинная дорога среди деревьев с рельефом.
+   Дорога — замкнутое волнистое кольцо; высота задаётся forestTerrain(x,z),
+   общей для физики приземления (groundHeightAt) и постановки объектов.
+   ============================================================ */
+const FOREST_R    = 235;      /* радиус, до которого строится рельеф */
+const FOREST_FLAT = 196;      /* отсюда рельеф сходит к плоской земле */
+
+function forestSmooth(a, b, x){ const t = clamp((x-a)/(b-a), 0, 1); return t*t*(3-2*t); }
+
+function forestPath(t){
+  const a = t*Math.PI*2;
+  const r = 120 + 40*Math.sin(3*a) + 24*Math.cos(5*a + 0.6);
+  return { x: Math.cos(a)*r, z: Math.sin(a)*r };
+}
+function forestTangent(t){
+  const e = 0.002;
+  const a = forestPath(t-e), b = forestPath(t+e);
+  const dx = b.x-a.x, dz = b.z-a.z, L = Math.hypot(dx, dz) || 1;
+  return { x: dx/L, z: dz/L };
+}
+function forestTerrain(x, z){
+  const r = Math.hypot(x, z);
+  const f = 1 - forestSmooth(FOREST_FLAT, FOREST_R, r);   /* к краю — ровно */
+  const h = 22
+          + 8.0*Math.sin(x*0.020)
+          + 7.0*Math.cos(z*0.023)
+          + 4.0*Math.sin((x + z)*0.028);
+  return Math.max(0.25, f*h);
+}
+/* 40 ворот вдоль дороги; высота — над местным рельефом (выше на холмах) */
+function buildForestTrack(n){
+  const gates = [];
+  for(let i = 0; i < n; i++){
+    const p = forestPath(i/n), tg = forestTangent(i/n);
+    const clr = Math.max(4, 4 + 1.6*Math.sin(i*0.9) + 0.8*Math.sin(i*2.3));
+    gates.push({ type:'ring', pos:[p.x, forestTerrain(p.x, p.z) + clr, p.z], r:3.0,
+                 faceYaw: Math.atan2(tg.x, tg.z) });
+  }
+  return gates;
+}
+/* расстояние от точки до дороги (по ломаной из сэмплов) */
+function distToRoad(pts, x, z){
+  let best = Infinity;
+  for(let i = 1; i < pts.length; i++){
+    const d = segDist2(pts[i-1][0], pts[i-1][1], pts[i][0], pts[i][1], x, z);
+    if(d < best) best = d;
+  }
+  return Math.sqrt(best);
+}
+
+function buildForestTrees(pts, count){
+  const trunkGeo = new THREE.CylinderGeometry(0.16, 0.24, 1.7, 6);
+  const leafGeo  = new THREE.ConeGeometry(1.5, 2.3, 7);
+  const trunkMat = new THREE.MeshStandardMaterial({ color:0x5a4327, roughness:1 });
+  const leafA = new THREE.MeshStandardMaterial({ color:0x2f6d33, roughness:1 });
+  const leafB = new THREE.MeshStandardMaterial({ color:0x255227, roughness:1 });
+  const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, count);
+  const leaf1  = new THREE.InstancedMesh(leafGeo, leafA, count);
+  const leaf2  = new THREE.InstancedMesh(leafGeo, leafB, count);
+  trunks.castShadow = leaf1.castShadow = leaf2.castShadow = true;
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), tr = new THREE.Vector3();
+  let n = 0, guard = 0;
+  while(n < count && guard < count*10){
+    guard++;
+    const ang = rnd()*Math.PI*2, rad = 22 + rnd()*(FOREST_FLAT - 32);
+    const x = Math.cos(ang)*rad, z = Math.sin(ang)*rad;
+    if(distToRoad(pts, x, z) < 9.5) continue;      /* не ставим на дорогу */
+    const y = forestTerrain(x, z);
+    const s = 0.8 + rnd()*0.9, ry = rnd()*Math.PI*2;
+    q.setFromAxisAngle(Y_AXIS, ry); sc.set(s, s, s);
+    tr.set(x, y + 0.85*s, z); m.compose(tr, q, sc); trunks.setMatrixAt(n, m);
+    tr.set(x, y + 1.9*s,  z); m.compose(tr, q, sc); leaf1.setMatrixAt(n, m);
+    tr.set(x, y + 3.0*s,  z); m.compose(tr, q, sc); leaf2.setMatrixAt(n, m);
+    /* коллайдер-цилиндр ствола/кроны */
+    forestTrees.push({ x, z, y0:y, y1:y + 4.2*s, r:1.05*s });
+    const key = Math.floor(x/FOREST_CELL) + ',' + Math.floor(z/FOREST_CELL);
+    const cell = forestGrid.get(key); if(cell) cell.push(n); else forestGrid.set(key, [n]);
+    n++;
+  }
+  trunks.count = leaf1.count = leaf2.count = n;
+  trunks.instanceMatrix.needsUpdate = leaf1.instanceMatrix.needsUpdate = leaf2.instanceMatrix.needsUpdate = true;
+  levelRoot.add(trunks); levelRoot.add(leaf1); levelRoot.add(leaf2);
+}
+
+function buildForest(){
+  seed = 24601;
+  forestTrees = []; forestGrid = new Map();
+
+  /* --- рельеф --- */
+  const seg = 84;
+  const geo = new THREE.PlaneGeometry(FOREST_R*2, FOREST_R*2, seg, seg);
+  geo.rotateX(-Math.PI/2);
+  const pos = geo.attributes.position;
+  for(let i = 0; i < pos.count; i++) pos.setY(i, forestTerrain(pos.getX(i), pos.getZ(i)));
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
+  const terrain = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color:0x35502f, roughness:1 }));
+  terrain.receiveShadow = true; levelRoot.add(terrain);
+
+  /* --- дорога: лента вдоль кольца --- */
+  const N = 300, halfW = 3.6;
+  const verts = [], uvs = [], idx = [];
+  for(let i = 0; i <= N; i++){
+    const t = i/N, p = forestPath(t), tg = forestTangent(t);
+    const nx = tg.z, nz = -tg.x;
+    const y = forestTerrain(p.x, p.z) + 0.2;
+    verts.push(p.x + nx*halfW, y, p.z + nz*halfW);
+    verts.push(p.x - nx*halfW, y, p.z - nz*halfW);
+    uvs.push(0, i*0.5, 1, i*0.5);
+    if(i < N){ const a = i*2; idx.push(a, a+1, a+2, a+1, a+3, a+2); }
+  }
+  const rgeo = new THREE.BufferGeometry();
+  rgeo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  rgeo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  rgeo.setIndex(idx); rgeo.computeVertexNormals();
+  const road = new THREE.Mesh(rgeo, new THREE.MeshStandardMaterial({ color:0x5b5246, roughness:1 }));
+  road.receiveShadow = true; levelRoot.add(road);
+
+  /* --- деревья --- */
+  const pts = [];
+  for(let i = 0; i <= 200; i++){ const p = forestPath(i/200); pts.push([p.x, p.z]); }
+  buildForestTrees(pts, 900);
+
+  /* --- стартовая арка «СТАРТ · ФИНИШ» на дороге, по рельефу --- */
+  const t0 = -1/80, sp = forestPath(t0), stg = forestTangent(t0);
+  const arch = new THREE.Group();
+  const AH = 5.5, AW = 7.6;
+  const archMat = new THREE.MeshStandardMaterial({ color:0x2b313c, roughness:.6, metalness:.3 });
+  const postGeo = new THREE.BoxGeometry(0.35, AH, 0.35);
+  for(const sx of [-1, 1]){
+    const post = new THREE.Mesh(postGeo, archMat);
+    post.position.set(sx*AW/2, AH/2, 0); post.castShadow = true; arch.add(post);
+  }
+  const beam = new THREE.Mesh(new THREE.BoxGeometry(AW + 0.35, 0.4, 0.4), archMat);
+  beam.position.y = AH; beam.castShadow = true; arch.add(beam);
+  const banner = new THREE.Mesh(
+    new THREE.PlaneGeometry(AW, 1.1),
+    new THREE.MeshBasicMaterial({ map: makeTextTexture('СТАРТ · ФИНИШ', 512, 96, '#0d1117', '#ffe066', 'bold 54px sans-serif'), transparent:true, side:THREE.DoubleSide })
+  );
+  banner.position.set(0, AH - 0.8, -0.22); banner.rotation.y = Math.PI; arch.add(banner);
+  arch.position.set(sp.x, forestTerrain(sp.x, sp.z), sp.z);
+  arch.rotation.y = Math.atan2(stg.x, stg.z);
+  levelRoot.add(arch);
 }
 
 /* --- описания уровней (возрастающая сложность) --- */
@@ -3378,7 +3872,7 @@ const LEVELS = [
     name:'Серпантин (UTT-1)',
     brief:'Змейка по мотивам MultiGP UTT-1: три длинных прохода и быстрый возврат. Норматив — 55 с, три звезды — до 36 с.',
     start:{x:0,y:GROUND_REST,z:0,yaw:0},
-    race:true, map:'meadow',
+    race:true, map:'stadium',
     timeLimit:85,
     gates:[
       { type:'ring', pos:[  0,5,16], r:2.9, faceYaw: 0 },
@@ -3397,7 +3891,7 @@ const LEVELS = [
     name:'Цунами (UTT-2)',
     brief:'Петля с длинной прямой и пикированием сквозь вертикальные ворота (MultiGP UTT-2). Три звезды — до 29 с.',
     start:{x:0,y:GROUND_REST,z:0,yaw:0},
-    race:true, map:'canyon',
+    race:true, map:'stadium',
     timeLimit:70,
     gates:[
       { type:'ring', pos:[  0,4,16], r:2.9, faceYaw: 0 },
@@ -3414,7 +3908,7 @@ const LEVELS = [
     name:'Спираль (UTT-5)',
     brief:'Раковина Nautilus: ворота закручиваются внутрь с постоянным снижением (MultiGP UTT-5). Три звезды — до 34 с.',
     start:{x:0,y:GROUND_REST,z:0,yaw:0},
-    race:true, map:'meadow',
+    race:true, map:'stadium',
     timeLimit:80,
     gates:[
       { type:'ring', pos:[ 22,8,  6], r:3.0, faceYaw: 1.30 },
@@ -3432,7 +3926,7 @@ const LEVELS = [
     name:'Высокое напряжение (UTT-4)',
     brief:'Городской слалом со сменой направления между домами и разворотом домой (MultiGP UTT-4). Три звезды — до 34 с.',
     start:{x:0,y:GROUND_REST,z:0,yaw:0},
-    race:true, map:'city',
+    race:true, map:'stadium',
     timeLimit:80,
     gates:[
       { type:'ring', pos:[  0,5,14], r:2.9, faceYaw: 0 },
@@ -3445,6 +3939,18 @@ const LEVELS = [
       { type:'ring', pos:[-14,5,22], r:2.9, faceYaw: 3.07 },
       { type:'land', pos:[0,GROUND_REST,0], r:3.2, maxSpeed:2.2 },
     ],
+  },
+  {
+    name:'Лесная дорога (40 ворот)',
+    brief:'Длинная лесная гонка на время: 40 ворот вдоль дороги, рельеф то поднимается, то опускается. Держитесь дороги.',
+    start:(()=>{
+      const t0 = -1/80, p = forestPath(t0), tg = forestTangent(t0);
+      return { x:p.x, y:GROUND_REST + forestTerrain(p.x, p.z), z:p.z, yaw:Math.atan2(tg.x, tg.z) };
+    })(),
+    terrain:'forest',
+    race:true,
+    timeLimit:260,
+    gates: buildForestTrack(40),
   },
   {
     name:'Свободный полёт',
@@ -3625,14 +4131,244 @@ function buildMapDecor(kind, gates){
   }
 }
 
+/* ============================================================
+   СТАДИОН — арена для всех гоночных трасс на время.
+   Тёмное поле с разметкой и логотипом, борта, LED-борта,
+   ступенчатые трибуны с козырьком, мачты прожекторов и табло
+   с названием трассы. Габариты подобраны так, чтобы все четыре
+   трассы UTT целиком лежали внутри поля.
+   ============================================================ */
+const ST_CX = 0, ST_CZ = 24;      /* центр поля */
+const ST_HW = 32, ST_HD = 50;     /* внутренние полуразмеры поля (X и Z) */
+
+function makeFieldTexture(){
+  const W = 1024, H = 1600;       /* пропорции под поле 64×100 м */
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  g.fillStyle = '#2a3038'; g.fillRect(0, 0, W, H);
+  /* метровая сетка */
+  g.strokeStyle = 'rgba(120,150,190,.10)'; g.lineWidth = 2;
+  for(let x = 0; x <= W; x += W/16){ g.beginPath(); g.moveTo(x,0); g.lineTo(x,H); g.stroke(); }
+  for(let y = 0; y <= H; y += H/25){ g.beginPath(); g.moveTo(0,y); g.lineTo(W,y); g.stroke(); }
+  /* центральный круг и логотип */
+  g.strokeStyle = 'rgba(120,180,255,.30)'; g.lineWidth = 10;
+  g.beginPath(); g.arc(W/2, H/2, 250, 0, Math.PI*2); g.stroke();
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillStyle = 'rgba(150,200,255,.16)';
+  g.font = 'bold 150px sans-serif'; g.fillText('FLY', W/2, H/2 - 70);
+  g.font = 'bold 96px sans-serif';  g.fillText('ARENA', W/2, H/2 + 70);
+  /* стартовая прямая */
+  g.fillStyle = 'rgba(255,210,63,.22)'; g.fillRect(0, H/2 - 8, W, 16);
+  /* шахматная окантовка по периметру */
+  const q = 32;
+  for(let i = 0; i < W/q; i++){
+    g.fillStyle = (i & 1) ? '#e8eef7' : '#12161c';
+    g.fillRect(i*q, 0, q, q); g.fillRect(i*q, H-q, q, q);
+  }
+  for(let j = 0; j < H/q; j++){
+    g.fillStyle = (j & 1) ? '#e8eef7' : '#12161c';
+    g.fillRect(0, j*q, q, q); g.fillRect(W-q, j*q, q, q);
+  }
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+function makeAdTexture(){
+  const W = 1024, H = 128;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  const seg = W/4, cols = ['#1f6fd0','#ffb03a','#39d353','#e8483c'];
+  const words = ['FLY ARENA','DRONE RACING','UTT','FLY ARENA'];
+  g.textAlign = 'center'; g.textBaseline = 'middle'; g.font = 'bold 58px sans-serif';
+  for(let i = 0; i < 4; i++){
+    g.fillStyle = cols[i]; g.fillRect(i*seg, 0, seg - 6, H);
+    g.fillStyle = '#08111c'; g.fillText(words[i], i*seg + seg/2, H/2 + 2);
+  }
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = THREE.RepeatWrapping;
+  return t;
+}
+function makeScreenTexture(title, sub){
+  const W = 1024, H = 576;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  const grd = g.createLinearGradient(0, 0, 0, H);
+  grd.addColorStop(0, '#0e1622'); grd.addColorStop(1, '#060a11');
+  g.fillStyle = grd; g.fillRect(0, 0, W, H);
+  g.strokeStyle = 'rgba(120,180,255,.35)'; g.lineWidth = 8; g.strokeRect(6, 6, W-12, H-12);
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  let size = 150; g.font = 'bold ' + size + 'px sans-serif';
+  while(g.measureText(title).width > W - 120 && size > 28){ size -= 4; g.font = 'bold ' + size + 'px sans-serif'; }
+  g.fillStyle = '#ffe066'; g.fillText(title, W/2, H*0.42);
+  g.font = 'bold 62px sans-serif'; g.fillStyle = '#9fd0ff'; g.fillText(sub, W/2, H*0.74);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+/* AABB-коллайдер арены (обрабатывается resolveCollisions) */
+function stadiumSolid(x, y, z, w, h, d){
+  stadiumSolids.push({ pos:[x, y, z], size:[w, h, d] });
+}
+
+function buildStadium(lv){
+  const A = getRaceAssets();
+  const cx = ST_CX, cz = ST_CZ, HW = ST_HW, HD = ST_HD;
+  const wallMat = new THREE.MeshStandardMaterial({ color:0x171d27, roughness:.7, metalness:.2 });
+  const concMat = new THREE.MeshStandardMaterial({ color:0x8b929c, roughness:.9 });
+  const darkMat = new THREE.MeshStandardMaterial({ color:0x2b313c, roughness:.55, metalness:.4 });
+
+  /* --- поле --- */
+  const field = new THREE.Mesh(
+    new THREE.PlaneGeometry(HW*2, HD*2),
+    new THREE.MeshStandardMaterial({ map:makeFieldTexture(), roughness:.92, metalness:.05 })
+  );
+  field.rotation.x = -Math.PI/2; field.position.set(cx, 0.04, cz);
+  field.receiveShadow = true; levelRoot.add(field);
+
+  /* --- борта по периметру --- */
+  const wallT = 0.5, wallH = 1.15;
+  const rails = [
+    [cx+HW+wallT/2, cz, wallT, HD*2+wallT*2],
+    [cx-HW-wallT/2, cz, wallT, HD*2+wallT*2],
+    [cx, cz+HD+wallT/2, HW*2+wallT*2, wallT],
+    [cx, cz-HD-wallT/2, HW*2+wallT*2, wallT],
+  ];
+  for(const [x, z, w, d] of rails){
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, wallH, d), wallMat);
+    m.position.set(x, wallH/2, z);
+    m.castShadow = true; m.receiveShadow = true; levelRoot.add(m);
+    stadiumSolid(x, wallH/2, z, w, wallH, d);
+  }
+
+  /* --- LED-борта (реклама) вдоль поля, между отбойником и трибунами --- */
+  const adSides = [
+    [cx+HW+1.6, cz, HD*2, -Math.PI/2],
+    [cx-HW-1.6, cz, HD*2,  Math.PI/2],
+    [cx, cz+HD+1.6, HW*2,  Math.PI],
+    [cx, cz-HD-1.6, HW*2,  0],
+  ];
+  for(const [x, z, len, rot] of adSides){
+    const tex = makeAdTexture();
+    tex.wrapS = THREE.RepeatWrapping; tex.repeat.set(Math.max(1, Math.round(len/12)), 1);
+    const board = new THREE.Mesh(
+      new THREE.PlaneGeometry(len, 1.1),
+      new THREE.MeshBasicMaterial({ map:tex })
+    );
+    board.position.set(x, 1.0, z); board.rotation.y = rot;
+    levelRoot.add(board);
+  }
+
+  /* --- трибуны (ступени + сиденья + задняя стена) --- */
+  const T = 5, dep = 2.4, rise = 1.1, baseY = 0.6;
+  const stepGeo = new THREE.BoxGeometry(1, rise, dep);
+  const seatGeo = new THREE.BoxGeometry(1, 0.12, dep*0.8);
+  const backGeo = new THREE.BoxGeometry(1, 1, 0.5);
+  const seatA = new THREE.MeshStandardMaterial({ color:0x2f6fb5, roughness:.85 });
+  const seatB = new THREE.MeshStandardMaterial({ color:0x24517f, roughness:.85 });
+  function addStand(len, px, pz, rotY){
+    const grp = new THREE.Group();
+    for(let i = 0; i < T; i++){
+      const step = new THREE.Mesh(stepGeo, concMat);
+      step.scale.x = len;
+      step.position.set(0, baseY + i*rise + rise/2, i*dep + dep/2);
+      step.castShadow = true; step.receiveShadow = true; grp.add(step);
+      const seat = new THREE.Mesh(seatGeo, i % 2 ? seatA : seatB);
+      seat.scale.x = len;
+      seat.position.set(0, baseY + (i+1)*rise + 0.06, i*dep + dep/2);
+      grp.add(seat);
+    }
+    const backH = T*rise + 1.4;
+    const back = new THREE.Mesh(backGeo, wallMat);
+    back.scale.set(len, backH, 1);
+    back.position.set(0, baseY + backH/2, T*dep + 0.25);
+    back.castShadow = true; grp.add(back);
+    grp.position.set(px, 0, pz); grp.rotation.y = rotY;
+    levelRoot.add(grp);
+    const totalD = T*dep + 0.5, totalH = baseY + T*rise + 0.3;
+    const c = Math.abs(Math.cos(rotY)), s = Math.abs(Math.sin(rotY));
+    stadiumSolid(px + Math.sin(rotY)*totalD/2, totalH/2, pz + Math.cos(rotY)*totalD/2,
+                 c*len + s*totalD, totalH, s*len + c*totalD);
+  }
+  addStand(HD*2, cx+HW+2.6, cz, Math.PI/2);
+  addStand(HD*2, cx-HW-2.6, cz, -Math.PI/2);
+  addStand(HW*2, cx, cz+HD+2.6, 0);
+  addStand(HW*2, cx, cz-HD-2.6, Math.PI);
+
+  /* --- козырёк над трибунами с опорами --- */
+  const roofY = baseY + T*rise + 3.4;
+  const roofD = T*dep + 2.6;
+  const pillarGeo = new THREE.CylinderGeometry(0.28, 0.28, roofY, 8);
+  const roofGeo = new THREE.BoxGeometry(1, 0.5, 1);
+  function addRoof(len, px, pz, rotY){
+    const roof = new THREE.Mesh(roofGeo, darkMat);
+    roof.scale.set(len + roofD, 1, roofD);
+    roof.position.set(px + Math.sin(rotY)*roofD/2, roofY, pz + Math.cos(rotY)*roofD/2);
+    roof.rotation.y = rotY; roof.castShadow = true; levelRoot.add(roof);
+    const n = Math.max(2, Math.round(len/16));
+    for(let i = 1; i < n; i++){
+      const lx = -len/2 + len*i/n, lz = roofD*0.85;
+      const wx = px + Math.cos(rotY)*lx + Math.sin(rotY)*lz;
+      const wz = pz - Math.sin(rotY)*lx + Math.cos(rotY)*lz;
+      const pil = new THREE.Mesh(pillarGeo, A.pillar);
+      pil.position.set(wx, roofY/2, wz); pil.castShadow = true; levelRoot.add(pil);
+    }
+  }
+  addRoof(HD*2, cx+HW+2.6, cz, Math.PI/2);
+  addRoof(HD*2, cx-HW-2.6, cz, -Math.PI/2);
+  addRoof(HW*2, cx, cz+HD+2.6, 0);
+  addRoof(HW*2, cx, cz-HD-2.6, Math.PI);
+
+  /* --- мачты прожекторов по углам --- */
+  const towerH = 17;
+  const towerGeo = new THREE.CylinderGeometry(0.35, 0.6, towerH, 10);
+  const headGeo = new THREE.BoxGeometry(4.4, 2.2, 0.7);
+  const lampGeo = new THREE.PlaneGeometry(0.8, 1.4);
+  const lampMat = new THREE.MeshBasicMaterial({ color:0xfff6d8 });
+  for(const sx of [-1, 1]) for(const sz of [-1, 1]){
+    const x = cx + sx*(HW + 7), z = cz + sz*(HD + 7);
+    const pole = new THREE.Mesh(towerGeo, A.pillar);
+    pole.position.set(x, towerH/2, z); pole.castShadow = true; levelRoot.add(pole);
+    const head = new THREE.Mesh(headGeo, darkMat);
+    head.position.set(x, towerH + 0.6, z); head.castShadow = true; levelRoot.add(head);
+    for(let i = 0; i < 4; i++){
+      const lamp = new THREE.Mesh(lampGeo, lampMat);
+      lamp.position.set(x - 1.65 + i*1.1, towerH + 0.6, z + 0.38);
+      lamp.lookAt(cx, towerH + 0.6, cz);
+      levelRoot.add(lamp);
+    }
+    stadiumSolid(x, towerH/2, z, 1.2, towerH, 1.2);
+  }
+
+  /* --- табло с названием трассы на дальнем торце --- */
+  const SW = 17, SH = 9.5, jz = cz + HD + T*dep + 9, jy = roofY + 4.5;
+  const jgrp = new THREE.Group();
+  const panel = new THREE.Mesh(new THREE.BoxGeometry(SW + 1.2, SH + 1.2, 0.8), darkMat);
+  panel.castShadow = true; jgrp.add(panel);
+  const face = new THREE.Mesh(
+    new THREE.PlaneGeometry(SW, SH),
+    new THREE.MeshBasicMaterial({ map: makeScreenTexture(lv.name, 'FLY ARENA · UTT') })
+  );
+  face.position.z = 0.42; jgrp.add(face);
+  jgrp.position.set(cx, jy, jz);
+  jgrp.rotation.y = Math.PI;          /* экран развёрнут в поле (−Z) */
+  levelRoot.add(jgrp);
+  for(const sx of [-1, 1]){
+    const leg = new THREE.Mesh(pillarGeo, A.pillar);
+    leg.position.set(cx + sx*(SW/2 - 1), jy/2, jz);
+    leg.castShadow = true; levelRoot.add(leg);
+  }
+}
+
 /* --- сборка сцены уровня --- */
 function buildLevelScene(lv){
   clearLevelRoot();
+  terrainFn = (lv.terrain === 'forest') ? forestTerrain : null;
   (lv.obstacles||[]).forEach(buildObstacle);
   (lv.gates||[]).forEach((g,i)=>buildGateVisual(g, !!lv.race, i));
-  if(lv.free) buildMapDecor(cfg.map);
+  if(lv.terrain === 'forest') buildForest();
+  else if(lv.race) buildStadium(lv);
+  else if(lv.free) buildMapDecor(cfg.map);
   else if(lv.map) buildMapDecor(lv.map, lv.gates);
-  if(lv.race) buildRaceProps(lv);
+  if(lv.race && lv.terrain !== 'forest') buildRaceProps(lv);
 }
 
 /* --- загрузка / перезапуск / завершение --- */
@@ -3702,7 +4438,7 @@ function completeGate(g){
 /* --- проверка ворот --- */
 const _gateV = new THREE.Vector3();
 function checkGate(g, dt){
-  const alt = state.pos.y - GROUND_REST;
+  const alt = aglAlt();
   const spd = Math.hypot(state.vel.x, state.vel.z);
   if(g.type === 'ring'){
     if(state.pos.distanceTo(_gateV.set(g.pos[0],g.pos[1],g.pos[2])) < g.r) completeGate(g);
@@ -3755,7 +4491,7 @@ function updateLevel(dt){
   levelState.aligned = false;
 
   /* ограничения (maxRoll в acro не проверяется — крен не лимитируется) */
-  const alt = state.pos.y - GROUND_REST;
+  const alt = aglAlt();
   const spd = Math.hypot(state.vel.x, state.vel.z);
   const rollDeg = Math.abs(state.roll * 180/Math.PI);
   if(lv.constraints){
@@ -3787,18 +4523,6 @@ function updateLevel(dt){
   /* гонка на время: выйти за лимит = провал */
   if(lv.timeLimit && levelState.elapsed > lv.timeLimit){
     failLevel('Время вышло'); return;
-  }
-
-  /* столкновения с препятствиями */
-  if(lv.obstacles){
-    for(const o of lv.obstacles){
-      const [w,h,d] = o.size, m = 0.6;
-      if(Math.abs(state.pos.x-o.pos[0]) < w/2+m &&
-         Math.abs(state.pos.y-o.pos[1]) < h/2+m &&
-         Math.abs(state.pos.z-o.pos[2]) < d/2+m){
-        failLevel('Столкновение с препятствием'); return;
-      }
-    }
   }
 
   /* проверка целей */
@@ -3838,6 +4562,7 @@ function hideOverlay(){ overlayEl.classList.remove('show'); overlayEl.innerHTML 
 function completeLevel(){
   levelState.done = true;
   guideArrow.visible = false;
+  if(netRace.active){ netRaceSendState(true); showRaceResult(); return; }
   const lv = LEVELS[currentLevelIndex];
   const t = levelState.elapsed;
   const s3 = lv.timeLimit ? lv.timeLimit*0.42 : 22;
@@ -3858,6 +4583,7 @@ function completeLevel(){
 function failLevel(reason){
   levelState.done = true;
   guideArrow.visible = false;
+  if(netRace.active){ netRace.selfFailed = true; netRaceSendState(true); showRaceResult(); return; }
   showOverlay(`
     <div class="card">
       <h2>Не получилось</h2>
@@ -3874,6 +4600,7 @@ overlayEl.addEventListener('click', e=>{
   const a = b.dataset.action;
   if(a === 'next') nextLevel();
   else if(a === 'retry') restartLevel();
+  else if(a === 'close') hideOverlay();
   else if(a === 'menu'){ hideOverlay(); openLevelMenu(); }
 });
 
@@ -3881,7 +4608,7 @@ overlayEl.addEventListener('click', e=>{
 function objectiveText(lv){
   const g = activeGate();
   if(!g) return lv.brief;
-  const alt = state.pos.y - GROUND_REST;
+  const alt = aglAlt();
   switch(g.type){
     case 'ring':     return 'Пролетите через подсвеченное кольцо';
     case 'hover':    return `Висение в зоне: ${levelState.hoverTime.toFixed(1)} / ${g.hold} с`;
@@ -3953,7 +4680,18 @@ function animate(){
   const dt = Math.min(0.05, clock.getDelta());
   qTime += dt; qFrames++;
   gpUpdate();
-  if(!paused){ updatePhysics(dt); updateLevel(dt); }
+  /* Сетевой старт: до «GO» физика и таймер стоят, идёт отсчёт. */
+  const frozen = netRace.active && (netRace.phase === 'waiting' || netRace.phase === 'countdown');
+  if(frozen){
+    if(netRace.phase === 'countdown'){
+      netRace.countdown -= dt;
+      renderCountdown();
+      if(netRace.countdown <= 0){ netRace.phase = 'running'; renderCountdown(); netRaceSendState(true); }
+    } else if(performance.now() > netRace.waitUntil){
+      netRaceGo();   /* хост — по готовности/таймауту; гость — аварийный таймаут */
+    }
+  }
+  if(!paused && !frozen){ updatePhysics(dt); updateLevel(dt); }
   renderer.render(scene, camera);
   if(camMode === 3) drawFpvHud();
 }

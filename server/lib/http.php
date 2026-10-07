@@ -149,7 +149,7 @@ function flyParticipants(PDO $db, int $roomId): array
 
 /* ─── комнаты как самостоятельные игры (несколько одновременно) ─── */
 
-const FLY_MAPS  = ['meadow', 'city', 'canyon'];
+const FLY_MAPS  = ['meadow', 'city', 'canyon', 'forest'];
 const FLY_MODES = ['angle', 'acro'];
 
 function flySanitizeMap(?string $map): string

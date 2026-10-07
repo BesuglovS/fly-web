@@ -56,6 +56,26 @@
   #levelbar .warn{color:#ff6b6b;font-weight:700}
   #levelbar .ok{color:#39d353;font-weight:700}
 
+  /* ---------- Сетевая гонка: табло прогресса и отсчёт ---------- */
+  #raceBoard{position:fixed;top:96px;left:50%;transform:translateX(-50%);z-index:6;
+    display:none;min-width:210px;max-width:min(320px,92vw);
+    background:rgba(10,16,24,.66);border:1px solid rgba(255,255,255,.14);
+    border-radius:12px;padding:9px 12px;backdrop-filter:blur(6px);
+    font-size:12px;line-height:1.55;pointer-events:none}
+  #raceBoard.show{display:block}
+  #raceBoard .ttl{font-weight:700;color:#9fd0ff;letter-spacing:.4px;margin-bottom:5px;font-size:11px}
+  #raceBoard .rr{display:flex;justify-content:space-between;gap:12px;font-variant-numeric:tabular-nums}
+  #raceBoard .rr .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #raceBoard .rr .tm{color:#9bb0c6}
+  #raceBoard .rr.me{color:#ffe066;font-weight:700}
+  #raceBoard .rr.me .tm{color:#ffe066}
+  #raceBoard .rr.done .tm{color:#39d353}
+  #countdown{position:fixed;inset:0;z-index:20;display:none;align-items:center;justify-content:center;
+    pointer-events:none;color:#fff;font-weight:800;letter-spacing:2px;
+    font-size:min(20vw,150px);text-shadow:0 3px 24px rgba(0,0,0,.8)}
+  #countdown.show{display:flex}
+  #countdown.wait{font-size:26px;letter-spacing:1px;font-weight:600}
+
   /* ---------- Level menu ---------- */
   #menuBtn{pointer-events:auto;display:block;width:100%;margin-bottom:8px;
     background:rgba(159,208,255,.15);border:1px solid rgba(159,208,255,.5);
@@ -89,6 +109,13 @@
   #overlay button.primary{background:#2f8fff;border-color:#2f8fff;color:#fff}
   #overlay button.primary:hover{background:#4aa0ff}
   #overlay .stars{font-size:22px;letter-spacing:4px;color:#ffd23f;margin:2px 0 10px}
+  #overlay .results{margin:6px 0 14px;text-align:left;min-width:270px}
+  #overlay .res-row{display:flex;gap:10px;align-items:center;padding:5px 8px;border-radius:8px;font-variant-numeric:tabular-nums}
+  #overlay .res-row:nth-child(odd){background:rgba(255,255,255,.04)}
+  #overlay .res-row.me{background:rgba(255,224,102,.15);color:#ffe066;font-weight:700}
+  #overlay .res-row b{width:22px;text-align:right;color:#9fd0ff}
+  #overlay .res-row span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #overlay .res-row em{color:#cfe0f5;font-style:normal}
 
   /* ---------- Help ---------- */
   #help{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);z-index:4;

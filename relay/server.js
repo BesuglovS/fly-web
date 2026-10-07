@@ -27,7 +27,7 @@ const { WebSocketServer } = require('ws');
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const PUBDIR = path.join(__dirname, '..', 'public');
 
-const MAPS = ['meadow', 'city', 'canyon'];
+const MAPS = ['meadow', 'city', 'canyon', 'forest'];
 const MODES = ['angle', 'acro'];
 const MAX_OPTIONS = [2, 4, 6, 8];
 const MAX_HARD = 8;
@@ -347,6 +347,18 @@ wss.on('connection', (ws) => {
           const out = { t: 'st', id: client.id, p: msg.p, q: msg.q };
           for (const c of room.members.values()) if (c.ws !== ws) send(c.ws, out);
         }
+        break;
+      }
+
+      /* сетевой старт/прогресс/результаты: пересылаем как есть остальным в комнате */
+      case 'ready':
+      case 'go':
+      case 'reset':
+      case 'race': {
+        const room = rooms.get(client.roomId);
+        if (!room) break;
+        const out = Object.assign({}, msg, { id: client.id });
+        for (const c of room.members.values()) if (c.ws !== ws) send(c.ws, out);
         break;
       }
 

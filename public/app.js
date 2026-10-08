@@ -558,8 +558,12 @@ addEventListener('keydown', e=>{
   }
   if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
 });
-addEventListener('keyup', e=>{ keys[e.code] = false; });
-addEventListener('blur', ()=>{ for(const k in keys) keys[k]=false; });
+addEventListener('keyup', e=>{
+  keys[e.code] = false;
+  /* Shift + ↑/↓ меняет наклон камеры — фиксируем результат при отпускании */
+  if(e.code === 'ArrowUp' || e.code === 'ArrowDown') saveCamTilt();
+});
+addEventListener('blur', ()=>{ for(const k in keys) keys[k]=false; saveCamTilt(); });
 
 const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
 const deadzone = (v, dz)=>Math.abs(v) < dz ? 0 : (v - Math.sign(v)*dz) / (1 - dz);
@@ -2710,6 +2714,28 @@ const camTarget = new THREE.Vector3();
 const camDesired = new THREE.Vector3();
 const tmpV = new THREE.Vector3();
 
+/* --- Наклон камеры относительно БПЛА (гимбал): Shift + ↑/↓ ---
+   Положительный угол — взгляд вверх. В FPV это угол установки камеры (как
+   у реальных FPV-камер), в остальных режимах — наклон обзора относительно
+   линии «камера → БПЛА». Значение сохраняется в localStorage. */
+const CAM_TILT_KEY  = 'pioneer-web-fly-camtilt';
+const CAM_TILT_MIN  = -40 * Math.PI/180;   // вниз
+const CAM_TILT_MAX  =  60 * Math.PI/180;   // вверх
+const CAM_TILT_RATE =  50 * Math.PI/180;   // рад/с при удержании клавиш
+let camTilt = 0;
+try{
+  const v = parseFloat(localStorage.getItem(CAM_TILT_KEY));
+  if(isFinite(v)) camTilt = clamp(v, CAM_TILT_MIN, CAM_TILT_MAX);
+}catch(_){}
+function saveCamTilt(){ try{ localStorage.setItem(CAM_TILT_KEY, String(camTilt)); }catch(_){} }
+function camTiltDeg(){ return camTilt * 180 / Math.PI; }
+function updateCamTilt(dt){
+  if(!(keys.ShiftLeft || keys.ShiftRight)) return;
+  const dir = (keys.ArrowUp?1:0) - (keys.ArrowDown?1:0);
+  if(!dir) return;
+  camTilt = clamp(camTilt + dir * CAM_TILT_RATE * dt, CAM_TILT_MIN, CAM_TILT_MAX);
+}
+
 function updateCamera(dt){
   /* в FPV аппарат скрыт целиком: пропеллеры, нос и корпус не загораживают вид */
   drone.visible = camMode !== 3;
@@ -2722,7 +2748,7 @@ function updateCamera(dt){
     /* камера по умолчанию смотрит вдоль локальной −Z, а нос дрона — +Z,
        поэтому разворачиваем FPV-камеру на 180° вокруг вертикали */
     camera.rotateY(Math.PI);
-    camera.rotateX(0.08);             // взгляд чуть вверх, как у реальных FPV-камер
+    camera.rotateX(0.08 + camTilt);   // угол установки FPV-камеры (Shift + ↑/↓)
     return;
   } else if(camMode === 0){
     /* позади дрона, вращается вместе с рысканием */
@@ -2745,6 +2771,8 @@ function updateCamera(dt){
   const k = 1 - Math.pow(0.001, dt);
   camera.position.lerp(camDesired, camMode===2 ? 0.25 : k);
   camera.lookAt(camTarget);
+  /* дополнительный наклон обзора относительно БПЛА (Shift + ↑/↓) */
+  if(camTilt) camera.rotateX(camTilt);
 }
 
 /* Плавный FOV: FPV — 105°, остальные — 62°. */
@@ -2803,7 +2831,9 @@ function updatePhysics(dt){
   const lx = clamp(stickL.x + (keys.KeyD?1:0) - (keys.KeyA?1:0), -1, 1);
   const ly = clamp(stickL.y + (keys.KeyW?1:0) - (keys.KeyS?1:0), -1, 1);
   const rx = clamp(stickR.x + (keys.ArrowRight?1:0) - (keys.ArrowLeft?1:0), -1, 1);
-  const ry = clamp(stickR.y + (keys.ArrowUp?1:0) - (keys.ArrowDown?1:0), -1, 1);
+  /* Shift + ↑/↓ — наклон камеры (см. updateCamTilt), а не тангаж */
+  const camAdj = keys.ShiftLeft || keys.ShiftRight;
+  const ry = clamp(stickR.y + (camAdj?0:(keys.ArrowUp?1:0)) - (camAdj?0:(keys.ArrowDown?1:0)), -1, 1);
   syncStickVisuals(lx, ly, rx, ry);
 
   const throttle = (ly + 1) / 2;   // 0..1
@@ -2834,6 +2864,7 @@ function updatePhysics(dt){
   shadowBlob.scale.setScalar(0.7 + (state.pos.y-GROUND_REST - groundHeightAt(state.pos.x, state.pos.z))*0.05);
   shadowBlob.material.opacity = 0.30 * h;
 
+  updateCamTilt(dt);
   updateCamera(dt);
   updateCameraFov();
   updateHUD(throttle, lx, ly, rx, ry);
@@ -3067,6 +3098,7 @@ const vRoll = document.getElementById('vRoll');
 const vHdg = document.getElementById('vHdg');
 const vMode = document.getElementById('vMode');
 const vBat = document.getElementById('vBat');
+const vCam = document.getElementById('vCam');
 const compassArrow = document.getElementById('compassArrow');
 
 function updateHUD(throttle){
@@ -3077,6 +3109,7 @@ function updateHUD(throttle){
   vPitch.textContent = deg(state.pitch).toFixed(0) + '°';
   vRoll.textContent = deg(state.roll).toFixed(0) + '°';
   if(vMode) vMode.textContent = FLIGHT_MODES[flightMode];
+  if(vCam){ const t = camTiltDeg(); vCam.textContent = (t>=0?'+':'') + t.toFixed(0) + '°'; }
   if(vBat){
     const pct = Math.round(batteryCharge*100);
     vBat.textContent = pct + '%';
@@ -3282,6 +3315,9 @@ function drawFpvHud(){
   fpvCtx.font = '11px system-ui,Segoe UI,Arial';
   fpvCtx.fillStyle = (vsi >= 0) ? G : WARN;
   fpvCtx.fillText((vsi>=0?'▲ ':'▼ ') + Math.abs(vsi).toFixed(1) + ' м/с', cx-186, cy+8);
+  /* угол наклона камеры (Shift + ↑/↓) */
+  fpvCtx.fillStyle = G;
+  fpvCtx.fillText('КАМ ' + (camTiltDeg()>=0?'+':'') + camTiltDeg().toFixed(0) + '°', cx-186, cy+26);
 
   fpvCtx.textAlign = 'right';
   fpvCtx.fillStyle = G;

@@ -37,6 +37,8 @@ const MAX_OPTIONS = [2, 4, 6, 8];
 const MAX_HARD = 8;
 const PUBLIC_MAX = 4;                 // больше — только администратор
 const PAIR_MAX = 3;                   // парная гонка: наблюдатель-админ + 2 гонщика
+const DIRECTOR_MAX = 7;               // гонка с наблюдателем: админ + до 6 гонщиков
+const DIRECTOR_RACERS = 6;
 const ADMIN_KEY = process.env.ADMIN_KEY || ''; // ключ админа (если задан)
 const NAME_MAX = 24;
 const ST_RATE = 40;        // st-сообщений в секунду на клиента
@@ -142,6 +144,7 @@ function roomInfo(room) {
     map: room.map,
     params: room.params,
     pair: !!room.pair,
+    director: !!room.director,
     host_user_id: room.hostId,
     host_name: host ? host.name : '',
     started: room.started,
@@ -155,7 +158,7 @@ function participants(room) {
       user_id: c.id,
       name: c.name,
       slot: c.slot,
-      role: room.pair && c.id === room.hostId ? 'spectator' : 'racer',
+      role: (room.pair || room.director) && c.id === room.hostId ? 'spectator' : 'racer',
     }));
 }
 function lobbyMessage(client) {
@@ -188,18 +191,23 @@ function pushRoom(room) {
 }
 
 /* ───────────────────────── Комнаты ───────────────────────── */
-function newRoom(client, title, max, pair) {
-  pair = !!pair && !!client.isAdmin;      // парную гонку создаёт только админ
+function newRoom(client, title, max, pair, director) {
+  pair = !!pair && !!client.isAdmin;          // комнаты с наблюдателем создаёт только админ
+  director = !!director && !pair && !!client.isAdmin;
+  const spectate = pair || director;
   const room = {
     id: ++roomSeq,
-    title: title || (pair ? 'Парная гонка' : ('Игра: ' + client.name)),
+    title: title || (pair ? 'Парная гонка' : (director ? 'Гонка с наблюдателем' : ('Игра: ' + client.name))),
     map: 'meadow',
     params: pair
       ? { mode: 'angle', pair: true, race: 'utt1' }
-      : { mode: 'angle' },
+      : (director
+        ? { mode: 'angle', director: true, racersMax: DIRECTOR_RACERS, race: 'utt1' }
+        : { mode: 'angle' }),
     pair: pair,
+    director: director,
     started: false,
-    max: pair ? PAIR_MAX : sanitizeMax(max, client.isAdmin),
+    max: spectate ? (pair ? PAIR_MAX : DIRECTOR_MAX) : sanitizeMax(max, client.isAdmin),
     hostId: client.id,
     createdAt: Date.now(),
     members: new Map(),
@@ -231,13 +239,13 @@ function leaveRoom(client) {
   if (!room) return;
   const wasHost = room.hostId === client.id;
   room.members.delete(client.id);
-  /* В парной гонке админ — обязательный наблюдатель: без него комната закрывается. */
-  if (room.pair && wasHost) {
+  /* В комнате с наблюдателем админ обязателен: без него комната закрывается. */
+  if ((room.pair || room.director) && wasHost) {
     rooms.delete(room.id);
     for (const c of room.members.values()) {
       c.roomId = 0;
       c.slot = -1;
-      send(c.ws, { t: 'error', code: 'room_closed', message: 'Парная гонка закрыта администратором' });
+      send(c.ws, { t: 'error', code: 'room_closed', message: 'Гонка закрыта администратором' });
     }
     broadcastLobby();
     return;
@@ -263,7 +271,7 @@ function applyControl(room, client, ctrl) {
   }
   if ('started' in ctrl) room.started = !!ctrl.started;
   if ('title' in ctrl) { const t = sanitizeName(ctrl.title, 60); if (t) room.title = t; }
-  if ('max' in ctrl && !room.pair) {
+  if ('max' in ctrl && !room.pair && !room.director) {
     const m = sanitizeMax(ctrl.max, client.isAdmin);
     if (m >= room.members.size) room.max = m;
   }
@@ -277,7 +285,7 @@ function welcome(ws, client, room) {
       name: client.name,
       slot: client.slot,
       isAdmin,
-      role: room.pair && room.hostId === client.id ? 'spectator' : 'racer',
+      role: (room.pair || room.director) && room.hostId === client.id ? 'spectator' : 'racer',
     },
     room: roomInfo(room),
     participants: participants(room),
@@ -353,11 +361,16 @@ wss.on('connection', (ws) => {
 
       case 'create': {
         const pair = msg.pair === true || msg.pair === 1 || msg.pair === '1';
-        if (pair && !client.isAdmin) {
-          send(ws, { t: 'error', message: 'Парная гонка доступна только администратору' });
+        const director = msg.director === true || msg.director === 1 || msg.director === '1';
+        if (pair && director) {
+          send(ws, { t: 'error', message: 'Выберите один режим: пара или гонка с наблюдателем' });
           break;
         }
-        const room = newRoom(client, sanitizeName(msg.title, 60), msg.max, pair);
+        if ((pair || director) && !client.isAdmin) {
+          send(ws, { t: 'error', message: 'Режим наблюдателя доступен только администратору' });
+          break;
+        }
+        const room = newRoom(client, sanitizeName(msg.title, 60), msg.max, pair, director);
         joinRoom(client, room);
         welcome(ws, client, room);
         pushRoom(room);
@@ -365,8 +378,8 @@ wss.on('connection', (ws) => {
       }
 
       case 'quick': {
-        let room = [...rooms.values()].find((r) => !r.pair && r.members.size < r.max);
-        if (!room) room = newRoom(client, '', 4, false);
+        let room = [...rooms.values()].find((r) => !r.pair && !r.director && r.members.size < r.max);
+        if (!room) room = newRoom(client, '', 4, false, false);
         joinRoom(client, room);
         welcome(ws, client, room);
         pushRoom(room);
@@ -376,7 +389,7 @@ wss.on('connection', (ws) => {
       case 'join': {
         const room = rooms.get(Number(msg.roomId));
         if (!room) { send(ws, { t: 'error', message: 'Комната не найдена' }); break; }
-        if (room.pair && room.started) { send(ws, { t: 'error', message: 'Гонка уже идёт' }); break; }
+        if ((room.pair || room.director) && room.started) { send(ws, { t: 'error', message: 'Гонка уже идёт' }); break; }
         if (room.members.size >= room.max) { send(ws, { t: 'error', message: 'Комната заполнена' }); break; }
         joinRoom(client, room);
         welcome(ws, client, room);

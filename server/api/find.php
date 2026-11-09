@@ -41,8 +41,8 @@ $roomId = FlyDb::immediateTxn($db, function (PDO $db) use ($userId, $name, $now)
     $stmt->execute();
     foreach ($stmt->fetchAll() as $row) {
         $params = json_decode((string) $row['params'], true);
-        if (!empty($params['pair'])) {
-            continue;   // парная гонка — только явный вход из списка
+        if (!empty($params['pair']) || !empty($params['director'])) {
+            continue;   // комнаты с наблюдателем — только явный вход из списка
         }
         flyUpsertPlayer($db, $userId, $name, (int) $row['id'], $now);
         return (int) $row['id'];

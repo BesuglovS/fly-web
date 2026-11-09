@@ -331,6 +331,8 @@
   .net-mini:hover{background:rgba(159,208,255,.3)}
   .net-mini.net-pair{background:rgba(255,224,102,.16);border-color:rgba(255,224,102,.6);color:#ffe9a8}
   .net-mini.net-pair:hover{background:rgba(255,224,102,.3)}
+  .net-mini.net-director{background:rgba(159,208,255,.18);border-color:rgba(159,208,255,.6);color:#dcebff}
+  .net-mini.net-director:hover{background:rgba(159,208,255,.3)}
   .net-wait{color:#ffd23f}
   .net-ok{color:#39d353}
   .net-doc{margin:10px 0 2px;text-align:center;font-size:12px}
@@ -338,6 +340,8 @@
   .net-doc a:hover{color:#dcebff}
   .net-row button.net-pair{background:rgba(255,224,102,.16);border-color:rgba(255,224,102,.6);color:#ffe9a8}
   .net-row button.net-pair:hover:not(:disabled){background:rgba(255,224,102,.28)}
+  .net-row button.net-director{background:rgba(159,208,255,.18);border-color:rgba(159,208,255,.6);color:#dcebff}
+  .net-row button.net-director:hover:not(:disabled){background:rgba(159,208,255,.3)}
 
   /* ---------- парная гонка: админ-наблюдатель ---------- */
   body.spec-mode #hud,
@@ -354,7 +358,7 @@
   body.spec-mode #specHud{display:block}
   #specHud .spec-top{position:absolute;top:10px;left:50%;transform:translateX(-50%);
     display:flex;flex-wrap:wrap;justify-content:center;gap:10px;align-items:center;
-    max-width:94vw;padding:7px 12px;border-radius:10px;background:rgba(6,12,20,.82);
+    width:max-content;max-width:94vw;padding:7px 12px;border-radius:10px;background:rgba(6,12,20,.82);
     border:1px solid rgba(159,208,255,.35);pointer-events:auto;white-space:nowrap;z-index:2}
   #specHud .spec-badge{color:#9fd0ff;font-weight:700;letter-spacing:.4px;font-size:11px}
   #specHud .spec-track{color:#ffe066;font-weight:600}
@@ -384,15 +388,56 @@
     border:1px solid rgba(159,208,255,.35);pointer-events:none}
   #specHud .spec-map-box.show{display:block}
   #specHud .spec-map-title{font-size:9.5px;letter-spacing:.4px;color:#9fd0ff;
-    font-weight:700;margin-bottom:5px;text-align:center}
+    font-weight:700;margin-bottom:5px;text-align:center;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis}
   #specHud #specMap{display:block;width:100%;height:auto;border-radius:6px;background:#09100d}
   #specHud .spec-map-legend{margin-top:5px;display:flex;flex-direction:column;gap:2px;
-    font-size:10.5px;color:#cfe0f5;max-height:34px;overflow:hidden}
+    font-size:10.5px;color:#cfe0f5;max-height:none;overflow:visible}
   #specHud .spec-map-legend .lg{display:flex;align-items:center;gap:5px;white-space:nowrap;
     overflow:hidden;text-overflow:ellipsis}
   #specHud .spec-map-legend .lg::before{content:'';width:7px;height:7px;border-radius:50%;flex:0 0 7px}
   #specHud .spec-map-legend .lg1::before{background:#ffe066}
   #specHud .spec-map-legend .lg2::before{background:#5cd6ff}
+  #specHud .spec-map-legend .lg3::before{background:#39d353}
+  #specHud .spec-map-legend .lg4::before{background:#ff7ab8}
+  #specHud .spec-map-legend .lg5::before{background:#ff9f43}
+  #specHud .spec-map-legend .lg6::before{background:#b18cff}
+  /* режим директора: один обзор/FPV + таблица всех гонщиков */
+  #specHud .spec-views{display:none;gap:3px;align-items:center}
+  #specHud.director .spec-views{display:flex}
+  #specHud .spec-views button{background:rgba(159,208,255,.12);border:1px solid rgba(159,208,255,.35);
+    color:#dcebff;border-radius:5px;padding:2px 6px;font-size:10.5px;font-weight:600;cursor:pointer}
+  #specHud .spec-views button:hover{background:rgba(159,208,255,.25)}
+  #specHud .spec-views button.sel{background:rgba(57,211,83,.24);border-color:rgba(57,211,83,.7);color:#d8ffe4}
+  #specHud .spec-table{display:none;position:absolute;left:14px;top:70px;width:400px;
+    padding:8px 10px;border-radius:10px;background:rgba(6,12,20,.84);
+    border:1px solid rgba(159,208,255,.35);pointer-events:none;font-size:11px}
+  #specHud.director .spec-table{display:block}
+  #specHud.director .spec-half,
+  #specHud.director .spec-divider{display:none}
+  #specHud .spec-table-title{font-size:9.5px;letter-spacing:.4px;color:#9fd0ff;font-weight:700;
+    margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #specHud .spec-table-head,
+  #specHud .st-row{display:grid;grid-template-columns:20px minmax(80px,1fr) 24px 40px 44px 38px 36px 54px;
+    gap:5px;align-items:center}
+  #specHud .spec-table-head{color:#8fb8e0;font-size:9.5px;padding-bottom:4px;
+    border-bottom:1px solid rgba(159,208,255,.18)}
+  #specHud .st-row{padding:3px 0;border-bottom:1px solid rgba(159,208,255,.08);
+    font-variant-numeric:tabular-nums}
+  #specHud .st-row:last-child{border-bottom:0}
+  #specHud .st-num{width:18px;height:18px;border-radius:50%;display:inline-flex;
+    align-items:center;justify-content:center;font-weight:700;color:#0b0f14;font-size:9px}
+  #specHud .dot1{background:#ffe066}
+  #specHud .dot2{background:#5cd6ff}
+  #specHud .dot3{background:#39d353}
+  #specHud .dot4{background:#ff7ab8}
+  #specHud .dot5{background:#ff9f43}
+  #specHud .dot6{background:#b18cff}
+  #specHud .st-name{color:#eaf6ff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #specHud .st-place,#specHud .st-gates,#specHud .st-time,
+  #specHud .st-speed,#specHud .st-alt{color:#cfe0f5}
+  #specHud .st-state{color:#9fd0ff;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #specHud .st-empty{color:#8fb8e0;padding:4px 0}
 
   @media (max-aspect-ratio: 9/10), (max-width:700px){
     #specHud .spec-half{width:100%;height:50%;left:0;right:0}
@@ -402,7 +447,12 @@
     #specHud .spec-top{top:6px;gap:6px;padding:5px 8px;font-size:11px}
     #specHud .spec-map-box{width:150px;padding:6px;right:8px;bottom:8px}
     #specHud .spec-map-title{font-size:8.5px;margin-bottom:4px}
-    #specHud .spec-map-legend{font-size:9px;max-height:28px}
+    #specHud .spec-map-legend{font-size:9px;max-height:none}
+    #specHud .spec-table{width:250px;top:96px;font-size:10px;padding:6px 8px}
+    #specHud .spec-table-head,
+    #specHud .st-row{grid-template-columns:18px minmax(54px,1fr) 20px 34px 38px 44px;gap:4px}
+    #specHud .st-speed,#specHud .st-alt,
+    #specHud .st-h-speed,#specHud .st-h-alt{display:none}
   }
   @media (pointer: coarse){
     #specHud .spec-btn{padding:9px 12px;min-height:38px}

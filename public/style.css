@@ -329,8 +329,84 @@
   .net-mini{background:rgba(159,208,255,.16);border:1px solid rgba(159,208,255,.5);
     color:#eaf6ff;border-radius:7px;padding:4px 10px;font-size:12px;font-weight:600;cursor:pointer}
   .net-mini:hover{background:rgba(159,208,255,.3)}
+  .net-mini.net-pair{background:rgba(255,224,102,.16);border-color:rgba(255,224,102,.6);color:#ffe9a8}
+  .net-mini.net-pair:hover{background:rgba(255,224,102,.3)}
   .net-wait{color:#ffd23f}
   .net-ok{color:#39d353}
+  .net-doc{margin:10px 0 2px;text-align:center;font-size:12px}
+  .net-doc a{color:#9fd0ff;text-decoration:none;border-bottom:1px dashed rgba(159,208,255,.5)}
+  .net-doc a:hover{color:#dcebff}
+  .net-row button.net-pair{background:rgba(255,224,102,.16);border-color:rgba(255,224,102,.6);color:#ffe9a8}
+  .net-row button.net-pair:hover:not(:disabled){background:rgba(255,224,102,.28)}
+
+  /* ---------- парная гонка: админ-наблюдатель ---------- */
+  body.spec-mode #hud,
+  body.spec-mode #levelbar,
+  body.spec-mode #legend,
+  body.spec-mode #raceBoard,
+  body.spec-mode #help,
+  body.spec-mode #fpvHud,
+  body.spec-mode #rotateHint,
+  body.spec-mode #stickLeft,
+  body.spec-mode #stickRight{display:none !important}
+  #specHud{position:fixed;inset:0;z-index:8;display:none;pointer-events:none;
+    color:#eaf6ff;font-size:12px}
+  body.spec-mode #specHud{display:block}
+  #specHud .spec-top{position:absolute;top:10px;left:50%;transform:translateX(-50%);
+    display:flex;flex-wrap:wrap;justify-content:center;gap:10px;align-items:center;
+    max-width:94vw;padding:7px 12px;border-radius:10px;background:rgba(6,12,20,.82);
+    border:1px solid rgba(159,208,255,.35);pointer-events:auto;white-space:nowrap;z-index:2}
+  #specHud .spec-badge{color:#9fd0ff;font-weight:700;letter-spacing:.4px;font-size:11px}
+  #specHud .spec-track{color:#ffe066;font-weight:600}
+  #specHud .spec-clock,#specHud .spec-finish{color:#cfe0f5;font-variant-numeric:tabular-nums}
+  #specHud .spec-btn{background:rgba(159,208,255,.16);border:1px solid rgba(159,208,255,.5);
+    color:#eaf6ff;border-radius:7px;padding:5px 10px;font-size:12px;font-weight:600;cursor:pointer}
+  #specHud .spec-btn:hover{background:rgba(159,208,255,.3)}
+  #specHud .spec-exit{background:rgba(255,92,77,.16);border-color:rgba(255,92,77,.55);color:#ffd8d4}
+  #specHud .spec-exit:hover{background:rgba(255,92,77,.3)}
+  #specHud .spec-half{position:absolute;top:0;bottom:0;width:50%;overflow:hidden;pointer-events:none}
+  #specHud .spec-left{left:0}
+  #specHud .spec-right{right:0;border-left:1px solid rgba(159,208,255,.32)}
+  #specHud .spec-label{position:absolute;top:58px;left:14px;right:14px;
+    display:flex;justify-content:space-between;gap:8px;align-items:center}
+  #specHud .spec-label b{font-size:14px;color:#eaf6ff;text-shadow:0 1px 3px #000}
+  #specHud .spec-label i{font-style:normal;font-size:11px;color:#9fd0ff;
+    background:rgba(6,12,20,.7);border:1px solid rgba(159,208,255,.3);border-radius:6px;padding:2px 7px}
+  #specHud .spec-stats{position:absolute;left:14px;bottom:14px;max-width:calc(100% - 28px);
+    padding:8px 10px;border-radius:8px;background:rgba(6,12,20,.74);
+    border:1px solid rgba(159,208,255,.28);white-space:pre-line;line-height:1.45;
+    font-variant-numeric:tabular-nums;color:#dcebff}
+  #specHud .spec-divider{position:absolute;top:0;bottom:0;left:50%;width:1px;
+    background:rgba(159,208,255,.18);pointer-events:none}
+  /* мини-карта лесной трассы (только для админа-наблюдателя) */
+  #specHud .spec-map-box{position:absolute;right:14px;bottom:14px;display:none;z-index:3;
+    width:210px;padding:8px 8px 7px;border-radius:10px;background:rgba(6,12,20,.84);
+    border:1px solid rgba(159,208,255,.35);pointer-events:none}
+  #specHud .spec-map-box.show{display:block}
+  #specHud .spec-map-title{font-size:9.5px;letter-spacing:.4px;color:#9fd0ff;
+    font-weight:700;margin-bottom:5px;text-align:center}
+  #specHud #specMap{display:block;width:100%;height:auto;border-radius:6px;background:#09100d}
+  #specHud .spec-map-legend{margin-top:5px;display:flex;flex-direction:column;gap:2px;
+    font-size:10.5px;color:#cfe0f5;max-height:34px;overflow:hidden}
+  #specHud .spec-map-legend .lg{display:flex;align-items:center;gap:5px;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis}
+  #specHud .spec-map-legend .lg::before{content:'';width:7px;height:7px;border-radius:50%;flex:0 0 7px}
+  #specHud .spec-map-legend .lg1::before{background:#ffe066}
+  #specHud .spec-map-legend .lg2::before{background:#5cd6ff}
+
+  @media (max-aspect-ratio: 9/10), (max-width:700px){
+    #specHud .spec-half{width:100%;height:50%;left:0;right:0}
+    #specHud .spec-left{top:0;bottom:auto}
+    #specHud .spec-right{top:50%;bottom:0;border-left:0;border-top:1px solid rgba(159,208,255,.32)}
+    #specHud .spec-divider{top:50%;bottom:auto;left:0;width:100%;height:1px}
+    #specHud .spec-top{top:6px;gap:6px;padding:5px 8px;font-size:11px}
+    #specHud .spec-map-box{width:150px;padding:6px;right:8px;bottom:8px}
+    #specHud .spec-map-title{font-size:8.5px;margin-bottom:4px}
+    #specHud .spec-map-legend{font-size:9px;max-height:28px}
+  }
+  @media (pointer: coarse){
+    #specHud .spec-btn{padding:9px 12px;min-height:38px}
+  }
   #gpRescan{display:block;width:100%;margin:10px 0 12px;
     background:rgba(255,210,63,.14);border:1px solid rgba(255,210,63,.5);color:#ffe9a8}
 

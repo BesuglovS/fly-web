@@ -31,17 +31,19 @@ $roomId = FlyDb::immediateTxn($db, function (PDO $db) use ($userId, $name, $now)
     }
 
     $stmt = $db->prepare(
-        'SELECT r.id
+        'SELECT r.id, r.params
            FROM rooms r
            LEFT JOIN players p ON p.room_id = r.id
           GROUP BY r.id
          HAVING COUNT(p.user_id) < r.max
-          ORDER BY r.created_at ASC, r.id ASC
-          LIMIT 1'
+          ORDER BY r.created_at ASC, r.id ASC'
     );
     $stmt->execute();
-    $row = $stmt->fetch();
-    if ($row) {
+    foreach ($stmt->fetchAll() as $row) {
+        $params = json_decode((string) $row['params'], true);
+        if (!empty($params['pair'])) {
+            continue;   // парная гонка — только явный вход из списка
+        }
         flyUpsertPlayer($db, $userId, $name, (int) $row['id'], $now);
         return (int) $row['id'];
     }

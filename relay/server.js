@@ -12,11 +12,13 @@
  * Без auth-web/TURN и без интернета: всё локально, идентификация по имени.
  *
  * Протокол (JSON):
- *   клиент → релей: hello{name} | lobby | create{title,max} | join{roomId}
- *                   | quick | control{map,mode,started,max,title} | st{p,q} | leave
- *   релей → клиент: lobby{rooms,maps,maxOptions,maxHard,self}
- *                   | welcome{self,room,participants,maps,maxOptions,maxHard}
- *                   | room{room,participants} | st{id,p,q} | error{message}
+ *   клиент → релей: hello{name,admin?} | lobby | create{title,max,pair?}
+ *                   | join{roomId} | quick | control{map,mode,started,max,title,race?}
+ *                   | st{p,q} | leave
+ *   релей → клиент: lobby{rooms,maps,races,maxOptions,maxHard,self}
+ *                   | welcome{self,room,participants,maps,races,maxOptions,maxHard,isAdmin}
+ *                   | room{room,participants} | st{id,p,q}
+ *                   | error{message,code?} | ready/go/reset/race
  */
 
 const http = require('http');
@@ -29,9 +31,12 @@ const PUBDIR = path.join(__dirname, '..', 'public');
 
 const MAPS = ['meadow', 'city', 'canyon', 'forest'];
 const MODES = ['angle', 'acro'];
+/* Гоночные трассы: стадионные UTT и лесная. ID общие с public/app.js. */
+const RACES = ['utt1', 'utt2', 'utt5', 'utt4', 'forest'];
 const MAX_OPTIONS = [2, 4, 6, 8];
 const MAX_HARD = 8;
 const PUBLIC_MAX = 4;                 // больше — только администратор
+const PAIR_MAX = 3;                   // парная гонка: наблюдатель-админ + 2 гонщика
 const ADMIN_KEY = process.env.ADMIN_KEY || ''; // ключ админа (если задан)
 const NAME_MAX = 24;
 const ST_RATE = 40;        // st-сообщений в секунду на клиента
@@ -101,6 +106,7 @@ function sanitizeName(v, max = NAME_MAX) {
 }
 function sanitizeMap(v) { return MAPS.includes(v) ? v : 'meadow'; }
 function sanitizeMode(v) { return MODES.includes(v) ? v : 'angle'; }
+function sanitizeRace(v) { return RACES.includes(v) ? v : ''; }
 function allowedOptions(isAdmin) { return isAdmin ? MAX_OPTIONS : MAX_OPTIONS.filter((n) => n <= PUBLIC_MAX); }
 function sanitizeMax(v, isAdmin) {
   let n = parseInt(v, 10);
@@ -135,6 +141,7 @@ function roomInfo(room) {
     title: room.title,
     map: room.map,
     params: room.params,
+    pair: !!room.pair,
     host_user_id: room.hostId,
     host_name: host ? host.name : '',
     started: room.started,
@@ -144,7 +151,12 @@ function roomInfo(room) {
 function participants(room) {
   return [...room.members.values()]
     .sort((a, b) => a.joined - b.joined || a.id - b.id)
-    .map((c) => ({ user_id: c.id, name: c.name, slot: c.slot }));
+    .map((c) => ({
+      user_id: c.id,
+      name: c.name,
+      slot: c.slot,
+      role: room.pair && c.id === room.hostId ? 'spectator' : 'racer',
+    }));
 }
 function lobbyMessage(client) {
   const isAdmin = !!(client && client.isAdmin);
@@ -152,6 +164,7 @@ function lobbyMessage(client) {
     t: 'lobby',
     rooms: lobbyList(),
     maps: MAPS,
+    races: RACES,
     maxOptions: allowedOptions(isAdmin),
     maxHard: isAdmin ? MAX_HARD : PUBLIC_MAX,
     self: client ? { id: client.id, name: client.name, isAdmin } : null,
@@ -175,14 +188,18 @@ function pushRoom(room) {
 }
 
 /* ───────────────────────── Комнаты ───────────────────────── */
-function newRoom(client, title, max) {
+function newRoom(client, title, max, pair) {
+  pair = !!pair && !!client.isAdmin;      // парную гонку создаёт только админ
   const room = {
     id: ++roomSeq,
-    title: title || ('Игра: ' + client.name),
+    title: title || (pair ? 'Парная гонка' : ('Игра: ' + client.name)),
     map: 'meadow',
-    params: { mode: 'angle' },
+    params: pair
+      ? { mode: 'angle', pair: true, race: 'utt1' }
+      : { mode: 'angle' },
+    pair: pair,
     started: false,
-    max: sanitizeMax(max, client.isAdmin),
+    max: pair ? PAIR_MAX : sanitizeMax(max, client.isAdmin),
     hostId: client.id,
     createdAt: Date.now(),
     members: new Map(),
@@ -212,11 +229,23 @@ function leaveRoom(client) {
   client.roomId = 0;
   client.slot = -1;
   if (!room) return;
+  const wasHost = room.hostId === client.id;
   room.members.delete(client.id);
+  /* В парной гонке админ — обязательный наблюдатель: без него комната закрывается. */
+  if (room.pair && wasHost) {
+    rooms.delete(room.id);
+    for (const c of room.members.values()) {
+      c.roomId = 0;
+      c.slot = -1;
+      send(c.ws, { t: 'error', code: 'room_closed', message: 'Парная гонка закрыта администратором' });
+    }
+    broadcastLobby();
+    return;
+  }
   if (room.members.size === 0) {
     rooms.delete(room.id);
   } else {
-    if (room.hostId === client.id) {
+    if (wasHost) {
       const next = [...room.members.values()].sort((a, b) => a.joined - b.joined)[0];
       room.hostId = next.id;
     }
@@ -228,18 +257,32 @@ function applyControl(room, client, ctrl) {
   if (room.hostId !== client.id) return;
   if ('map' in ctrl) room.map = sanitizeMap(ctrl.map);
   if ('mode' in ctrl) { room.params = room.params || {}; room.params.mode = sanitizeMode(ctrl.mode); }
+  if ('race' in ctrl) {
+    const r = sanitizeRace(ctrl.race);
+    if (r) { room.params = room.params || {}; room.params.race = r; }
+  }
   if ('started' in ctrl) room.started = !!ctrl.started;
   if ('title' in ctrl) { const t = sanitizeName(ctrl.title, 60); if (t) room.title = t; }
-  if ('max' in ctrl) { const m = sanitizeMax(ctrl.max, client.isAdmin); if (m >= room.members.size) room.max = m; }
+  if ('max' in ctrl && !room.pair) {
+    const m = sanitizeMax(ctrl.max, client.isAdmin);
+    if (m >= room.members.size) room.max = m;
+  }
 }
 function welcome(ws, client, room) {
   const isAdmin = !!client.isAdmin;
   send(ws, {
     t: 'welcome',
-    self: { id: client.id, name: client.name, slot: client.slot, isAdmin },
+    self: {
+      id: client.id,
+      name: client.name,
+      slot: client.slot,
+      isAdmin,
+      role: room.pair && room.hostId === client.id ? 'spectator' : 'racer',
+    },
     room: roomInfo(room),
     participants: participants(room),
     maps: MAPS,
+    races: RACES,
     maxOptions: allowedOptions(isAdmin),
     maxHard: isAdmin ? MAX_HARD : PUBLIC_MAX,
     isAdmin,
@@ -309,7 +352,12 @@ wss.on('connection', (ws) => {
         break;
 
       case 'create': {
-        const room = newRoom(client, sanitizeName(msg.title, 60), msg.max);
+        const pair = msg.pair === true || msg.pair === 1 || msg.pair === '1';
+        if (pair && !client.isAdmin) {
+          send(ws, { t: 'error', message: 'Парная гонка доступна только администратору' });
+          break;
+        }
+        const room = newRoom(client, sanitizeName(msg.title, 60), msg.max, pair);
         joinRoom(client, room);
         welcome(ws, client, room);
         pushRoom(room);
@@ -317,8 +365,8 @@ wss.on('connection', (ws) => {
       }
 
       case 'quick': {
-        let room = [...rooms.values()].find((r) => r.members.size < r.max);
-        if (!room) room = newRoom(client, '', 4);
+        let room = [...rooms.values()].find((r) => !r.pair && r.members.size < r.max);
+        if (!room) room = newRoom(client, '', 4, false);
         joinRoom(client, room);
         welcome(ws, client, room);
         pushRoom(room);
@@ -328,6 +376,7 @@ wss.on('connection', (ws) => {
       case 'join': {
         const room = rooms.get(Number(msg.roomId));
         if (!room) { send(ws, { t: 'error', message: 'Комната не найдена' }); break; }
+        if (room.pair && room.started) { send(ws, { t: 'error', message: 'Гонка уже идёт' }); break; }
         if (room.members.size >= room.max) { send(ws, { t: 'error', message: 'Комната заполнена' }); break; }
         joinRoom(client, room);
         welcome(ws, client, room);

@@ -67,4 +67,5 @@ flyJson([
     'maxOptions' => flyAllowedMaxOptions($isAdmin),
     'isAdmin' => $isAdmin,
     'maps' => FLY_MAPS,
+    'races' => FLY_RACES,
 ]);

@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Парная гонка 1×1 через релей — инструкция</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="favicon.ico" sizes="any">
+<link rel="stylesheet" href="pair-race.css">
+</head>
+<body>
+<header class="hero">
+  <div class="wrap">
+    <div class="kicker">fly.nayanovaacademy.ru · LAN-релей · 10.12.6.23:8080</div>
+    <h1>Парная гонка 1×1 через релей</h1>
+    <p class="lead">Администратор создаёт заезд на релее, два ученика подключаются к нему через сайт или напрямую. Ниже — пошаговые действия для обеих сторон.</p>
+    <div class="actions">
+      <a class="btn primary" href="http://10.12.6.23:8080/?lan" target="_blank" rel="noopener">Открыть релей</a>
+      <a class="btn" href="https://fly.nayanovaacademy.ru/" target="_blank" rel="noopener">Открыть сайт</a>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="notice">
+    <b>Главное:</b> парную гонку создаёт администратор именно <b>на релее</b>. Сайт — удобный вход для учеников; сайт и релей — разные комнаты и между собой не смешиваются. Оба гонщика должны быть на одном релее.
+  </section>
+
+  <div class="grid">
+    <section class="card admin-card">
+      <div class="card-head">
+        <span class="role">Администратор</span>
+        <h2>Создать парную гонку</h2>
+      </div>
+      <ol class="steps">
+        <li>
+          <span class="num">1</span>
+          <div>
+            <b>Запустить релей на 10.12.6.23</b>
+            <p>Открой PowerShell на машине релея и выполни:</p>
+            <pre><code>cd C:\websites\na\fly-web\relay
+$env:PORT = '8080'
+$env:ADMIN_KEY = 'ваш-ключ'
+npm start</code></pre>
+            <p class="small">Первый запуск: <code>npm install</code>. Ключ <code>ADMIN_KEY</code> придумай свой и не публикуй его на этой странице.</p>
+          </div>
+        </li>
+        <li>
+          <span class="num">2</span>
+          <div>
+            <b>Проверить релей</b>
+            <p>Открой <a href="http://10.12.6.23:8080/healthz" target="_blank" rel="noopener">http://10.12.6.23:8080/healthz</a>. Должно быть <code>ok</code>.</p>
+          </div>
+        </li>
+        <li>
+          <span class="num">3</span>
+          <div>
+            <b>Открыть админ-ссылку релея</b>
+            <pre><code>http://10.12.6.23:8080/?lan&amp;admin=ВАШ_КЛЮЧ</code></pre>
+            <p class="small">Вместо <code>ВАШ_КЛЮЧ</code> подставь значение <code>ADMIN_KEY</code>. Эту ссылку не давай ученикам.</p>
+          </div>
+        </li>
+        <li>
+          <span class="num">4</span>
+          <div>
+            <b>Создать парную гонку</b>
+            <p>Нажми <b>«🌐 Сетевая игра»</b> → <b>«🏁 Парная гонка 1×1»</b>. Выбери трассу (UTT-1/2/5/4 или «Лесная дорога») и режим Angle/Acro.</p>
+          </div>
+        </li>
+        <li>
+          <span class="num">5</span>
+          <div>
+            <b>Дождаться двух гонщиков</b>
+            <p>В комнате должно появиться <b>«Гонщики: 2 / 2»</b>. После этого нажми <b>«🚀 Начать гонку»</b>.</p>
+          </div>
+        </li>
+        <li>
+          <span class="num">6</span>
+          <div>
+            <b>Смотреть заезд и перезапускать</b>
+            <p>Админ видит два FPV-вида и статистику. После финиша в итоговом табло нажми <b>«🔁 Перезапустить гонку»</b> — оба гонщика вернутся на старт, таймер начнётся заново.</p>
+          </div>
+        </li>
+      </ol>
+    </section>
+
+    <section class="card player-card">
+      <div class="card-head">
+        <span class="role">Ученик</span>
+        <h2>Подключиться к парной гонке</h2>
+      </div>
+      <ol class="steps">
+        <li>
+          <span class="num">1</span>
+          <div>
+            <b>Открыть сайт</b>
+            <p><a href="https://fly.nayanovaacademy.ru/" target="_blank" rel="noopener">https://fly.nayanovaacademy.ru</a></p>
+            <p class="small">Если сайт недоступен, открой релей напрямую: <a href="http://10.12.6.23:8080/?lan" target="_blank" rel="noopener">http://10.12.6.23:8080/?lan</a>.</p>
+          </div>
+        </li>
+        <li>
+          <span class="num">2</span>
+          <div>
+            <b>Открыть «🌐 Сетевая игра»</b>
+            <p>На стартовом экране или в панели управления.</p>
+          </div>
+        </li>
+        <li>
+          <span class="num">3</span>
+          <div>
+            <b>Проверить адрес релея</b>
+            <p>В поле <b>«Релей»</b> уже стоит <code>10.12.6.23:8080</code>. Менять ничего не нужно.</p>
+          </div>
+        </li>
+        <li>
+          <span class="num">4</span>
+          <div>
+            <b>Нажать «🏁 Парная гонка»</b>
+            <p>Откроется релей, и ученик автоматически войдёт в открытую парную комнату.</p>
+            <p class="small">Альтернатива: открыть <a href="http://10.12.6.23:8080/?lan" target="_blank" rel="noopener">релей</a> и нажать «Войти» у комнаты «Парная гонка».</p>
+          </div>
+        </li>
+        <li>
+          <span class="num">5</span>
+          <div>
+            <b>Дождаться старта</b>
+            <p>Пока админ не нажал «Начать гонку», в окне будет «Ожидание старта администратора…». После старта — отсчёт 3-2-1 и полёт.</p>
+          </div>
+        </li>
+        <li>
+          <span class="num">6</span>
+          <div>
+            <b>После финиша — ждать перезапуска</b>
+            <p>Гонщик видит итоговое табло. Перезапускает админ; после этого заезд начнётся автоматически.</p>
+          </div>
+        </li>
+      </ol>
+    </section>
+  </div>
+
+  <section class="card wide">
+    <h2>Что важно знать</h2>
+    <ul class="checklist">
+      <li>В парной комнате <b>3 слота</b>: админ-наблюдатель + 2 гонщика. Третьего гонщика игра не пустит.</li>
+      <li>В уже начатую или заполненную парную комнату войти нельзя — дождитесь перезапуска или создайте новую.</li>
+      <li>Если ученик заходит <b>через сайт</b>, он должен нажать именно «🏁 Парная гонка», а не создавать свою игру.</li>
+      <li>Админ создаёт пару <b>на релее</b> по админ-ссылке. Если создать пару на сайте, ученики на релее её не увидят.</li>
+      <li>На релее вход анонимный — логин через портал не нужен.</li>
+      <li>После обновления страницы или перезапуска релея админ-ссылку с ключом нужно открыть заново.</li>
+    </ul>
+  </section>
+
+  <section class="card wide">
+    <h2>Если что-то не работает</h2>
+    <dl class="faq">
+      <dt>У гонщика открывается «Уровень 1/15 — Взлёт и посадка»</dt>
+      <dd>Нажмите <b>Ctrl+F5</b> на вкладках админа и гонщика. Убедитесь, что оба в одной парной комнате на одном релее и что админ выбрал трассу до старта.</dd>
+
+      <dt>«Нет открытой парной гонки»</dt>
+      <dd>Админ ещё не создал пару на релее или создал её на сайте. Парную гонку нужно создать по админ-ссылке релея.</dd>
+
+      <dt>«Комната заполнена»</dt>
+      <dd>В комнате уже два гонщика. Дождитесь следующего заезда или попросите админа создать новую пару.</dd>
+
+      <dt>Релей не открывается с других компьютеров</dt>
+      <dd>Проверьте <code>http://10.12.6.23:8080/healthz</code>. Если не отвечает — релей не запущен. Если отвечает только на самой машине — откройте порт 8080 в Windows Firewall (от имени администратора):
+        <pre><code>New-NetFirewallRule -DisplayName "fly-web LAN relay 8080" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8080 -Profile Public</code></pre>
+      </dd>
+
+      <dt>Порт 8080 уже занят</dt>
+      <dd>Остановите старый релей и запустите снова:
+        <pre><code>$pid = (Get-NetTCPConnection -LocalPort 8080 -State Listen).OwningProcess
+Stop-Process -Id $pid -Force</code></pre>
+      </dd>
+
+      <dt>После финиша не начинается новый заезд</dt>
+      <dd>Перезапуск делает админ: кнопка <b>«🔁 Перезапустить гонку»</b> в итоговом табло или в сетевой панели.</dd>
+    </dl>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Симулятор полёта БПЛА · парная гонка через LAN-релей</span>
+    <span><a href="./">На главную</a></span>
+  </div>
+</footer>
+</body>
+</html>

@@ -1578,6 +1578,16 @@ const NET_API     = '/api/signal';
 const NET_MAX     = 4;
 const NET_POLL_MS = 2000;
 const NET_MAP_NAMES = { meadow:'Луг', city:'Город', canyon:'Каньон', forest:'Лесная дорога' };
+/* Гоночные трассы (ID общие с сервером/релеем) — для парной гонки и статистики. */
+const NET_RACE_NAMES = {
+  utt1: 'Серпантин (UTT-1)',
+  utt2: 'Цунами (UTT-2)',
+  utt5: 'Спираль (UTT-5)',
+  utt4: 'Высокое напряжение (UTT-4)',
+  forest: 'Лесная дорога',
+};
+/* Адрес релея по умолчанию: машина в локальной сети школы. */
+const NET_RELAY_DEFAULT = '10.12.6.23:8080';
 /* Точки спавна по слоту игрока (0..7): сетка 2×4, чтобы не появляться в одной точке. */
 const NET_SPAWNS = [
   { x:-5.25, z:-2.5 }, { x:-1.75, z:-2.5 }, { x:1.75, z:-2.5 }, { x:5.25, z:-2.5 },
@@ -1585,9 +1595,17 @@ const NET_SPAWNS = [
 ];
 /* Спавн по слоту: для лесной трассы — на дороге у стартовой арки, по рельефу;
    для плоских карт — прежняя сетка у нуля. Возвращает {x,y,z}. */
+function netInfoRaceId(info){
+  return (info && info.params && info.params.race) || '';
+}
+function netInfoIsForest(info){
+  const rid = netInfoRaceId(info);
+  if(rid) return rid === 'forest';
+  return !!(info && info.map === 'forest');
+}
 function netSpawn(slot){
   slot = Math.max(0, Number(slot) || 0);
-  if(netRoom.info && netRoom.info.map === 'forest'){
+  if(netInfoIsForest(netRoom.info)){
     const t0 = -1/80, p = forestPath(t0), tg = forestTangent(t0);
     const nx = tg.z, nz = -tg.x;          /* нормаль к дороге */
     const col = slot % 4, row = (slot / 4) | 0;
@@ -1606,8 +1624,11 @@ function netSpawn(slot){
 const NET_QS = new URLSearchParams(location.search);
 const NET_RELAY = NET_QS.has('lan') || NET_QS.has('relay') || location.protocol === 'http:';
 const NET_ADMIN_KEY = NET_QS.get('admin') || '';
+const NET_AUTO_PAIR = NET_QS.has('pair') || NET_QS.get('join') === 'pair';
 const LAN_NAME_KEY = 'fly-lan-name';
-const LAN_RELAY_KEY = 'fly-lan-relay';
+/* v2: старые сохранённые адреса (до появления 10.12.6.23) игнорируем,
+   чтобы поле по умолчанию было заполнено актуальным адресом. */
+const LAN_RELAY_KEY = 'fly-lan-relay-v2';
 
 /* Адрес релея «host[:port]» → URL WebSocket. Пустая строка = текущий хост. */
 function relayWsUrlFromAddr(addr){
@@ -1627,8 +1648,10 @@ function relayWsUrlFromAddr(addr){
 function relayDefaultAddr(){
   const q = NET_QS.get('relay');
   if(q) return q;
+  /* На сайте адрес по умолчанию всегда заполнен; на самом релее — его хост. */
+  if(NET_RELAY) return location.host;
   try{ const saved = localStorage.getItem(LAN_RELAY_KEY); if(saved) return saved; }catch(_){}
-  return NET_RELAY ? location.host : '';
+  return NET_RELAY_DEFAULT;
 }
 /* Адрес релея «host[:port]» → http-URL его страницы (?lan). Пусто, если адрес не задан. */
 function relayHttpUrlFromAddr(addr){
@@ -1642,14 +1665,16 @@ function relayHttpUrlFromAddr(addr){
   if(host.indexOf(':') < 0) host += ':8080';
   return 'http://' + host + '/?lan';
 }
-/* С сайта (https) ws:// к LAN-IP запрещён (mixed content) — открываем страницу релея в новой вкладке. */
-function openLocalRelay(addr){
+/* С сайта (https) ws:// к LAN-IP запрещён (mixed content) — открываем страницу релея в новой вкладке.
+   opts.pair — сразу войти в первую открытую парную гонку на релее. */
+function openLocalRelay(addr, opts){
   addr = String(addr == null ? '' : addr).trim();
   if(addr === ''){ netSetStatus('⚠ Укажите адрес релея (IP:порт)', false); return; }
   try{ localStorage.setItem(LAN_RELAY_KEY, addr); }catch(_){}
-  const url = relayHttpUrlFromAddr(addr);
+  let url = relayHttpUrlFromAddr(addr);
+  if(opts && opts.pair) url += '&pair=1';
   try{ window.open(url, '_blank', 'noopener'); }catch(_){ location.href = url; }
-  netSetStatus('↗ Открываю локальный релей: ' + url, true);
+  netSetStatus((opts && opts.pair ? '↗ Открываю парную гонку на релее: ' : '↗ Открываю локальный релей: ') + url, true);
 }
 let relayTarget = relayDefaultAddr();
 let relayUrl = relayWsUrlFromAddr(relayTarget);
@@ -1664,9 +1689,23 @@ function netReady(){ return NET_RELAY || !!authUser; }
 /* ---------- LAN-релей: транспорт по WebSocket ---------- */
 let relayWs = null;
 let relayReady = false;
+let relayHelloSeen = false;
+let relayAutoPairDone = false;
 
 function relaySend(obj){
   try{ if(relayWs && relayWs.readyState === 1) relayWs.send(JSON.stringify(obj)); }catch(_){}
+}
+/* Автовход в открытую парную гонку при переходе с сайта (?lan&pair=1). */
+function relayAutoPairTry(){
+  if(!NET_AUTO_PAIR || !relayHelloSeen || netRoom.active || !relayReady || relayAutoPairDone) return false;
+  const room = netRoom.lobbyRooms.find(r =>
+    r.params && r.params.pair && !r.started &&
+    Math.max(0, Number(r.count) - 1) < 2);
+  if(!room) return false;
+  relayAutoPairDone = true;
+  netSetStatus('⟳ Подключение к парной гонке…', true);
+  relaySend({ t:'join', roomId: room.id });
+  return true;
 }
 function relayHello(name){ relaySend({ t:'hello', name: name, admin: NET_ADMIN_KEY }); }
 function relayConnect(addr){
@@ -1685,6 +1724,8 @@ function relayConnect(addr){
   if(relayWs){ try{ relayWs.close(); }catch(_){} }
   relayWs = null;
   relayReady = false;
+  relayHelloSeen = false;
+  relayAutoPairDone = false;
   relayTarget = target;
   relayUrl = url;
   try{ localStorage.setItem(LAN_RELAY_KEY, target); }catch(_){}
@@ -1725,12 +1766,21 @@ function relayOnMessage(data){
   let m;
   try{ m = JSON.parse(data); }catch(_){ return; }
   if(!m || !m.t) return;
-  if(m.t === 'hello'){ if(m.self && m.self.name) netRoom.selfName = m.self.name; return; }
+  if(m.t === 'hello'){
+    if(m.self && m.self.name) netRoom.selfName = m.self.name;
+    if(m.self) netRoom.isAdmin = !!m.self.isAdmin;
+    relayHelloSeen = true;
+    relayAutoPairTry();
+    return;
+  }
   if(m.t === 'lobby'){
     if(m.self && m.self.name) netRoom.selfName = m.self.name;
+    if(m.self) netRoom.isAdmin = !!m.self.isAdmin;
     netRoom.lobbyRooms = m.rooms || [];
     syncNetMeta(m);
-    if(!netRoom.active) renderNetBody();
+    if(!netRoom.active){
+      if(!relayAutoPairTry()) renderNetBody();
+    }
     return;
   }
   if(m.t === 'welcome'){ relayEnter(m); return; }
@@ -1744,7 +1794,28 @@ function relayOnMessage(data){
     return;
   }
   if(m.t === 'ready' || m.t === 'go' || m.t === 'reset' || m.t === 'race'){ netRaceHandle(m.id, m); return; }
-  if(m.t === 'error'){ netSetStatus('⚠ ' + m.message, false); return; }
+  if(m.t === 'error'){
+    if(m.code === 'room_closed'){
+      const wasRace = netRace.active;
+      stopNet();
+      netSetStatus('⚠ ' + (m.message || 'Игра закрыта'), false);
+      renderNetBody();
+      if(wasRace){
+        showOverlay('<div class="card"><h2>Гонка завершена</h2>' +
+          '<p>Администратор закрыл парную гонку.</p>' +
+          '<div class="btns"><button data-action="close">Продолжить полёт</button>' +
+          '<button class="primary" data-action="menu">К уровням</button></div></div>');
+      }
+    } else {
+      if(/Комната заполнена|Гонка уже идёт/i.test(String(m.message || ''))){
+        /* Автовход не удался — попробуем другую открытую пару при следующем лобби. */
+        relayAutoPairDone = false;
+        relaySend({ t:'lobby' });
+      }
+      netSetStatus('⚠ ' + m.message, false);
+    }
+    return;
+  }
 }
 function syncNetMeta(m){
   if(Array.isArray(m.maps) && m.maps.length) netRoom.maps = m.maps;
@@ -1757,6 +1828,8 @@ function relayEnter(m){
   netRoom.selfId = Number(m.self.id);
   netRoom.selfSlot = Number(m.self.slot) || 0;
   netRoom.selfName = m.self.name;
+  netRoom.selfRole = (m.self && m.self.role) || 'racer';
+  netRoom.isAdmin = !!(m.isAdmin || (m.self && m.self.isAdmin));
   netRoom.info = m.room || null;
   netRoom.max = (m.room && m.room.max) || netRoom.max;
   syncNetMeta(m);
@@ -1766,6 +1839,7 @@ function relayEnter(m){
   netRoom.startedSeen = false;
   applyParticipants(m.participants || []);
   applyNetGame(true);
+  netUpdateSpectator();
   updateNetStatusText();
   renderNetBody();
 }
@@ -1774,6 +1848,7 @@ function relayRoomUpdate(m){
   if(m.room){ netRoom.info = m.room; netRoom.max = m.room.max || netRoom.max; }
   applyParticipants(m.participants || []);
   applyNetGame(false);
+  netUpdateSpectator();
   updateNetStatusText();
   renderNetBody();
 }
@@ -1784,6 +1859,8 @@ const netRoom = {
   selfId: 0,
   selfSlot: 0,
   selfName: 'Пилот',
+  selfRole: 'racer',
+  isAdmin: false,
   max: NET_MAX,
   pollTimer: null,
   lobbyTimer: null,
@@ -1808,6 +1885,29 @@ const netRoom = {
 let netKickTimer = null;
 
 function netMapName(id){ return NET_MAP_NAMES[id] || 'Луг'; }
+function netRaceName(id){ return NET_RACE_NAMES[id] || 'Трасса'; }
+function netIsAdminUser(){ return !!(netRoom.isAdmin || (authUser && authUser.is_admin)); }
+function netIsPair(){
+  const p = netRoom.info && netRoom.info.params;
+  return !!(p && p.pair);
+}
+function netSelfIsSpectator(){
+  return !!(netIsPair() && netRoom.info && netRoom.selfId === netRoom.info.host_user_id);
+}
+/* Индекс уровня для сетевой игры: трасса из params.race либо карта/лес/свободный полёт. */
+function netLevelIndex(info){
+  const rid = netInfoRaceId(info);
+  if(rid){
+    const i = LEVELS.findIndex(l => l.raceId === rid);
+    if(i >= 0) return i;
+  }
+  if(info && info.map === 'forest'){
+    const i = LEVELS.findIndex(l => l.terrain === 'forest');
+    if(i >= 0) return i;
+  }
+  const i = LEVELS.findIndex(l => l.free);
+  return i >= 0 ? i : LEVELS.length - 1;
+}
 function netSelfName(){
   if(NET_RELAY) return netRoom.selfName || lanName();
   return (authUser && (authUser.display_name || authUser.login)) || 'Пилот';
@@ -1848,7 +1948,7 @@ function closeNetModal(){
   netModalEl.classList.remove('show');
   netModalEl.setAttribute('aria-hidden','true');
   stopLobbyPolling();
-  if(stStep !== 0) showStart(stStep, stTarget);
+  if(stStep !== 0 && !netSpectator) showStart(stStep, stTarget);
 }
 
 function updateNetStatusText(){
@@ -1865,8 +1965,9 @@ function updateNetStatusText(){
    открытие страницы релея (ws:// к LAN-IP из https браузер блокирует). */
 function netRelayHtml(){
   return '<p class="net-step">Релей: ' +
-    '<input id="netRelay" class="net-addr" value="' + escapeHtml(relayTarget) + '" placeholder="192.168.1.50:8080"> ' +
+    '<input id="netRelay" class="net-addr" value="' + escapeHtml(relayTarget) + '" placeholder="' + NET_RELAY_DEFAULT + '"> ' +
     '<button type="button" id="netRelayGo" class="net-mini">' + (NET_RELAY ? 'Подключиться' : 'Открыть релей') + '</button>' +
+    (!NET_RELAY ? ' <button type="button" id="netRelayPair" class="net-mini net-pair" title="Открыть релей и войти в открытую парную гонку">🏁 Парная гонка</button>' : '') +
     (NET_RELAY ? (relayReady ? ' <span class="net-ok">● онлайн</span>' : ' <span class="net-wait">● подключение…</span>') : '') +
   '</p>';
 }
@@ -1876,6 +1977,11 @@ function netBindRelayLine(){
     const el = document.getElementById('netRelay');
     const val = el ? el.value : '';
     if(NET_RELAY) relayConnect(val); else openLocalRelay(val);
+  });
+  const rp = document.getElementById('netRelayPair');
+  if(rp) rp.addEventListener('click', ()=>{
+    const el = document.getElementById('netRelay');
+    openLocalRelay(el ? el.value : relayTarget, { pair:true });
   });
   const rl = document.getElementById('netRelay');
   if(rl) rl.addEventListener('keydown', e=>{
@@ -1897,21 +2003,31 @@ function renderNetBody(){
 function renderLobby(){
   const canStart = NET_RELAY ? relayReady : true;
   const rows = netRoom.lobbyRooms.map(r=>{
-    const full = r.count >= r.max;
+    const pair = !!(r.params && r.params.pair);
+    const racers = pair ? Math.max(0, r.count - 1) : r.count;   // хост пары — наблюдатель
+    const cap = pair ? 2 : r.max;
+    const full = pair ? (racers >= cap || r.started) : (r.count >= r.max);
     const status = r.started ? 'идёт' : 'ожидание';
+    const place = pair ? netRaceName(r.params.race) : netMapName(r.map);
+    const title = r.title || (pair ? 'Парная гонка' : 'Игра');
     return '<div class="net-room">' +
-      '<div class="net-room-main"><b>' + escapeHtml(r.title || 'Игра') + '</b>' +
-        '<small>' + escapeHtml(r.host_name || '—') + ' · ' + netMapName(r.map) + ' · ' + status + '</small></div>' +
-      '<div class="net-room-side"><span>' + r.count + '/' + r.max + '</span>' +
+      '<div class="net-room-main"><b>' + escapeHtml(title) + (pair ? ' · 1×1' : '') + '</b>' +
+        '<small>' + escapeHtml(r.host_name || '—') + ' · ' + escapeHtml(place) + ' · ' + status + '</small></div>' +
+      '<div class="net-room-side"><span>' + racers + '/' + cap + '</span>' +
         '<button type="button" data-join="' + r.id + '"' + ((full || !canStart) ? ' disabled' : '') + '>Войти</button></div>' +
     '</div>';
   }).join('');
 
   let head = netRelayHtml();
+  if(!NET_RELAY){
+    head += '<p class="net-step">Парная гонка на релее: ученики нажимают «🏁 Парная гонка» — ' +
+      'откроется релей и произойдёт вход в открытую парную комнату.</p>';
+  }
   if(NET_RELAY){
     head +=
       '<p class="net-step">Ваше имя: ' +
         '<input id="netName" class="net-name" maxlength="24" value="' + escapeHtml(lanName()) + '"></p>';
+    if(NET_AUTO_PAIR) head += '<p class="net-step">Ищем открытую парную гонку на релее…</p>';
   }
 
   netStepsEl.innerHTML = head +
@@ -1920,6 +2036,7 @@ function renderLobby(){
     '<div class="gp-btns net-row">' +
       '<button type="button" id="netCreate"' + (canStart ? '' : ' disabled') + '>➕ Создать игру</button>' +
       '<button type="button" id="netQuick"' + (canStart ? '' : ' disabled') + '>⚡ Быстрая игра</button>' +
+      (netIsAdminUser() ? '<button type="button" id="netPair" class="net-pair"' + (canStart ? '' : ' disabled') + '>🏁 Парная гонка 1×1</button>' : '') +
       '<button type="button" id="netRefresh" title="Обновить список">🔄</button>' +
     '</div>' +
     '<p class="net-step">Открытые игры — выберите нужную и нажмите «Войти»:</p>' +
@@ -1929,6 +2046,7 @@ function renderLobby(){
 
   const c = document.getElementById('netCreate');  if(c) c.addEventListener('click', netCreate);
   const q = document.getElementById('netQuick');   if(q) q.addEventListener('click', netQuick);
+  const pr = document.getElementById('netPair');   if(pr) pr.addEventListener('click', netCreatePair);
   const rf = document.getElementById('netRefresh'); if(rf) rf.addEventListener('click', refreshLobby);
   const nm = document.getElementById('netName');
   if(nm) nm.addEventListener('change', ()=>{
@@ -1946,20 +2064,59 @@ function renderLobby(){
 function renderRoom(){
   const info = netRoom.info || {};
   const isHost = info.host_user_id === netRoom.selfId;
+  const pair = netIsPair();
+  const spectator = isHost && pair;
   const mode = (info.params && info.params.mode) || 'angle';
+  const peers = [...netRoom.peers.values()];
+  const racerPeers = peers.filter(p => (p.role || 'racer') !== 'spectator');
+  const racerCount = racerPeers.length + (spectator ? 0 : 1);
 
-  const rows = ['<div class="net-player"><span>' + escapeHtml(netRoom.selfName) + '</span><em>' + (isHost ? 'вы · хост' : 'вы') + '</em></div>'];
-  for(const p of netRoom.peers.values()){
+  const selfTag = spectator ? 'вы · наблюдатель'
+    : (isHost ? 'вы · хост' : (pair ? 'вы · гонщик' : 'вы'));
+  const rows = ['<div class="net-player"><span>' + escapeHtml(netRoom.selfName) + '</span><em>' + selfTag + '</em></div>'];
+  for(const p of peers){
     let stateTxt;
     if(p.open) stateTxt = 'соединён';
     else if(p.iceState === 'failed' || p.connState === 'failed') stateTxt = 'ошибка соединения';
     else stateTxt = 'подключение…';
-    const tag = (p.userId === info.host_user_id ? ' · хост' : '') + ' · ' + stateTxt;
-    rows.push('<div class="net-player"><span>' + escapeHtml(p.name) + '</span><em>' + tag.trim() + '</em></div>');
+    const tagParts = [];
+    if(pair) tagParts.push((p.role === 'spectator') ? 'наблюдатель' : 'гонщик');
+    if(p.userId === info.host_user_id) tagParts.push('хост');
+    tagParts.push(stateTxt);
+    rows.push('<div class="net-player"><span>' + escapeHtml(p.name) + '</span><em>' +
+      tagParts.join(' · ') + '</em></div>');
   }
 
   let controls;
-  if(isHost){
+  if(spectator){
+    const raceLevels = LEVELS.filter(l => l.race);
+    const curRace = (info.params && info.params.race) || '';
+    const raceBtns = raceLevels.map(l =>
+      '<button type="button" data-race="' + l.raceId + '" class="' + (l.raceId === curRace ? 'sel' : '') + '"' +
+      (info.started ? ' disabled' : '') + '>' + escapeHtml(l.name) + '</button>').join('');
+    const modeBtns =
+      '<button type="button" data-mode="angle" class="' + (mode === 'angle' ? 'sel' : '') + '">🎯 Angle</button>' +
+      '<button type="button" data-mode="acro" class="' + (mode === 'acro' ? 'sel' : '') + '">🌀 Acro</button>';
+    const openRacers = racerPeers.filter(p => p.open).length;
+    const needMore = !info.started && (racerCount < 2 || openRacers < 2);
+    controls =
+      '<p class="net-h3">Трасса</p><div class="net-maps">' + raceBtns + '</div>' +
+      '<p class="net-h3">Режим полёта</p><div class="net-maps">' + modeBtns + '</div>' +
+      '<p class="net-step">Гонщики: ' + racerCount + ' / 2' +
+        (needMore ? ' — ждём второго участника' : '') + '</p>' +
+      '<div class="gp-btns net-row">' +
+        (info.started ? '<button type="button" id="netStart">🔁 Перезапустить гонку</button>'
+                      : '<button type="button" id="netStart"' + (needMore ? ' disabled' : '') + '>🚀 Начать гонку</button>') +
+        '<button type="button" id="netLeave" class="net-ghost">Выйти</button>' +
+      '</div>';
+  } else if(pair){
+    controls =
+      '<p class="net-step">Трасса: <b>' + escapeHtml(netRaceName(info.params && info.params.race)) +
+        '</b>, режим <b>' + (mode === 'angle' ? 'Angle' : 'Acro') + '</b>.</p>' +
+      (info.started ? '<p class="net-step">Гонка идёт — вы гонщик.</p>'
+                    : '<p class="net-step">Ожидание старта администратора…</p>') +
+      '<div class="gp-btns net-row"><button type="button" id="netLeave" class="net-ghost">Выйти из игры</button></div>';
+  } else if(isHost){
     const mapBtns = netRoom.maps.map(m =>
       '<button type="button" data-map="' + m + '" class="' + (m === info.map ? 'sel' : '') + '">' + netMapName(m) + '</button>').join('');
     const modeBtns =
@@ -1986,14 +2143,16 @@ function renderRoom(){
       '<div class="gp-btns net-row"><button type="button" id="netLeave" class="net-ghost">Выйти из игры</button></div>';
   }
 
+  const place = pair ? netRaceName(info.params && info.params.race) : netMapName(info.map);
   netStepsEl.innerHTML =
     '<div class="net-player"><span>' + escapeHtml(info.title || 'Игра') + '</span><em>' +
-      (info.started ? 'идёт' : 'ожидание') + ' · ' + netMapName(info.map) + '</em></div>' +
+      (info.started ? 'идёт' : 'ожидание') + ' · ' + escapeHtml(place) + (pair ? ' · 1×1' : '') + '</em></div>' +
     '<p class="net-step">Участники (' + rows.length + '/' + netRoom.max + '):</p>' +
     '<div class="net-players">' + rows.join('') + '</div>' + controls;
 
   const st = document.getElementById('netStart');  if(st) st.addEventListener('click', hostStart);
   const lv = document.getElementById('netLeave');  if(lv) lv.addEventListener('click', netLeave);
+  netStepsEl.querySelectorAll('button[data-race]').forEach(b=> b.addEventListener('click', ()=> hostSetRace(b.dataset.race)));
   netStepsEl.querySelectorAll('button[data-map]').forEach(b=> b.addEventListener('click', ()=> hostSetMap(b.dataset.map)));
   netStepsEl.querySelectorAll('button[data-mode]').forEach(b=> b.addEventListener('click', ()=> hostSetMode(b.dataset.mode)));
   netStepsEl.querySelectorAll('button[data-max]').forEach(b=> b.addEventListener('click', ()=> hostSetMax(Number(b.dataset.max))));
@@ -2026,6 +2185,19 @@ async function netCreate(){
   try{ await enterRoom(await netApi('create.php', { title })); }
   catch(err){ netSetStatus('⚠ ' + err.message, false); }
 }
+async function netCreatePair(){
+  if(!netReady() || netRoom.active || !netIsAdminUser()) return;
+  const titleEl = document.getElementById('netTitle');
+  const title = (titleEl ? titleEl.value.trim().slice(0, 40) : '') || 'Парная гонка';
+  if(NET_RELAY){
+    relaySend({ t:'create', title, pair:true });
+    netSetStatus('⟳ Создание парной гонки…', true);
+    return;
+  }
+  netSetStatus('⟳ Создание парной гонки…', true);
+  try{ await enterRoom(await netApi('create.php', { title, pair:true })); }
+  catch(err){ netSetStatus('⚠ ' + err.message, false); }
+}
 async function netQuick(){
   if(!netReady() || netRoom.active) return;
   if(NET_RELAY){ relaySend({ t:'quick' }); netSetStatus('⟳ Поиск игры…', true); return; }
@@ -2048,6 +2220,8 @@ async function enterRoom(data){
   netRoom.selfId = data.self ? Number(data.self.id) : (Number(authUser.id) || 0);
   netRoom.selfSlot = data.self && data.self.slot != null ? Number(data.self.slot) : 0;
   netRoom.selfName = (data.self && data.self.name) || netSelfName();
+  netRoom.selfRole = (data.self && data.self.role) || 'racer';
+  netRoom.isAdmin = !!data.isAdmin;
   netRoom.max = Number(data.max) || NET_MAX;
   if(Array.isArray(data.maxOptions) && data.maxOptions.length) netRoom.maxOptions = data.maxOptions;
   if(data.maxHard) netRoom.maxHard = Number(data.maxHard) || netRoom.maxHard;
@@ -2061,6 +2235,7 @@ async function enterRoom(data){
   if(!netRoom.active) return;    // пока ждали — могли выйти
   applyParticipants(data.participants || []);
   applyNetGame(true);
+  netUpdateSpectator();
   startNetPolling();
   updateNetStatusText();
   renderNetBody();
@@ -2083,6 +2258,18 @@ async function netLeave(){
   renderNetBody();
   if(!NET_RELAY && authUser && netModalEl.classList.contains('show')) startLobbyPolling();
 }
+/* Остановка с видимым уведомлением, если парная гонка прервалась. */
+function netStopWithNotice(text){
+  const wasRace = netRace.active;
+  const wasPair = netIsPair();
+  stopNet();
+  netSetStatus('○ ' + text, false);
+  if(wasRace && wasPair){
+    showOverlay('<div class="card"><h2>Гонка завершена</h2><p>' + escapeHtml(text) + '</p>' +
+      '<div class="btns"><button data-action="close">Продолжить полёт</button>' +
+      '<button class="primary" data-action="menu">К уровням</button></div></div>');
+  }
+}
 
 function stopNet(){
   if(netKickTimer){ clearTimeout(netKickTimer); netKickTimer = null; }
@@ -2095,6 +2282,8 @@ function stopNet(){
   netRaceStop();
   netRoom.polling = false;
   netRoom.info = null;
+  netRoom.selfRole = 'racer';
+  netUpdateSpectator();
   if(NET_RELAY){
     relaySend({ t:'leave' });
     return;
@@ -2124,6 +2313,7 @@ async function refreshLobby(){
   try{
     const data = await netApi('rooms.php', {});
     netRoom.lobbyRooms = data.rooms || [];
+    if(data.isAdmin != null) netRoom.isAdmin = !!data.isAdmin;
     if(Array.isArray(data.maps) && data.maps.length) netRoom.maps = data.maps;
     if(!netRoom.active) renderLobby();
   }catch(_){}
@@ -2152,6 +2342,8 @@ async function netPollOnce(){
     if(control) netRoom.control = {};
     if(data.room) netRoom.info = data.room;
     if(data.max) netRoom.max = Number(data.max);
+    if(data.isAdmin != null) netRoom.isAdmin = !!data.isAdmin;
+    if(data.self && data.self.role) netRoom.selfRole = data.self.role;
     if(Array.isArray(data.maxOptions) && data.maxOptions.length) netRoom.maxOptions = data.maxOptions;
     applyParticipants(data.participants || []);
     applyNetGame(false);
@@ -2160,8 +2352,8 @@ async function netPollOnce(){
     renderNetBody();
   }catch(err){
     if(err.status === 401)      stopNet(), netSetStatus('⚠ Требуется вход через портал', false);
-    else if(err.status === 404) stopNet(), netSetStatus('○ Игра закрыта', false);
-    else if(err.status === 403) stopNet(), netSetStatus('○ Сессия закрыта', false);
+    else if(err.status === 404) netStopWithNotice(netIsPair() ? 'Парная гонка закрыта' : 'Игра закрыта');
+    else if(err.status === 403) netStopWithNotice(netIsPair() ? 'Парная гонка закрыта' : 'Сессия закрыта');
   }finally{
     netRoom.polling = false;
   }
@@ -2174,6 +2366,7 @@ function hostControl(patch){
   if(!info || info.host_user_id !== netRoom.selfId) return;
   if('map' in patch) info.map = patch.map;
   if('mode' in patch){ info.params = info.params || {}; info.params.mode = patch.mode; }
+  if('race' in patch){ info.params = info.params || {}; info.params.race = patch.race; }
   if('max' in patch){ info.max = patch.max; netRoom.max = patch.max; }
   if('started' in patch) info.started = !!patch.started;
   if(NET_RELAY){
@@ -2187,18 +2380,67 @@ function hostControl(patch){
 }
 function hostSetMap(map){ hostControl({ map }); }
 function hostSetMode(mode){ hostControl({ mode }); }
+function hostSetRace(race){
+  if(!netRoom.info || netRoom.info.started) return;
+  hostControl({ race });
+}
 function hostSetMax(max){
   if(max < (1 + netRoom.peers.size)) return; // нельзя меньше числа текущих участников
   hostControl({ max });
 }
 function hostStart(){
+  /* Парная гонка: старт только когда подключены оба гонщика. */
+  if(netIsPair() && netRoom.info && !netRoom.info.started){
+    const racers = [...netRoom.peers.values()]
+      .filter(p => (p.role || 'racer') !== 'spectator' && p.open).length;
+    if(racers < 2){
+      netSetStatus('⚠ Нужно два подключённых гонщика', false);
+      return;
+    }
+  }
   /* повторное «Начать игру» в идущей гонке — общий перезапуск */
   if(netRoom.info && netRoom.info.started){
-    netRaceReset();
-    netBroadcast({ t:'reset' });
+    netRestartRace();
     return;
   }
   hostControl({ started:true });
+}
+/* Перезапуск идущей/завершённой сетевой гонки — только хост. */
+function netRestartRace(){
+  if(!netRoom.active || !netRoom.info || !netRoom.info.started) return;
+  if(!netRaceIsHost()) return;
+  netRaceReset();
+  netBroadcast({ t:'reset' });
+}
+
+/* Страховка от рассинхрона: если игра уже идёт, а локально загружен не тот
+   уровень (например, клиент остался на «Взлёт и посадка»), принудительно
+   загружаем трассу из params.race / карту из info.map. */
+function netEnsureTrack(info){
+  if(!info || !info.started) return false;
+  const lv = LEVELS[currentLevelIndex] || {};
+  const rid = netInfoRaceId(info);
+  if(rid){
+    if(lv.raceId === rid) return false;
+    const li = LEVELS.findIndex(l => l.raceId === rid);
+    if(li >= 0 && li !== currentLevelIndex){
+      loadLevel(li);
+      netPlaceLocalAtSpawn();
+      netUpdateSpectator();
+      return true;
+    }
+    return false;
+  }
+  if(info.map === 'forest' && lv.terrain !== 'forest'){
+    const li = LEVELS.findIndex(l => l.terrain === 'forest');
+    if(li >= 0 && li !== currentLevelIndex){
+      loadLevel(li);
+      netPlaceLocalAtSpawn();
+      netUpdateSpectator();
+      return true;
+    }
+  }
+  return false;
 }
 
 /* Применить карту/режим хоста: у хоста — сразу, у гостей — при старте. */
@@ -2210,14 +2452,14 @@ function applyNetGame(force){
   if(!(started || (force && isHost))) return;
 
   let loadedNow = false;
-  if(netRoom.appliedMap !== info.map){
-    netRoom.appliedMap = info.map;
-    if(info.map !== 'forest'){ cfg.map = info.map; saveCfg(); }   /* 'forest' — только сетевая трасса */
+  const raceId = netInfoRaceId(info);
+  const gameKey = raceId ? ('race:' + raceId) : ('map:' + (info.map || 'meadow'));
+  if(netRoom.appliedMap !== gameKey){
+    netRoom.appliedMap = gameKey;
+    if(!raceId && info.map !== 'forest'){ cfg.map = info.map; saveCfg(); }   /* 'forest' — только сетевая трасса */
     hideStart();
-    const li = (info.map === 'forest')
-      ? LEVELS.findIndex(l => l.terrain === 'forest')
-      : LEVELS.findIndex(l => l.free);
-    loadLevel(li >= 0 ? li : LEVELS.length - 1);
+    const li = netLevelIndex(info);
+    loadLevel(li);
     netPlaceLocalAtSpawn();
     loadedNow = true;
   }
@@ -2234,8 +2476,11 @@ function applyNetGame(force){
     netRoom.startedSeen = true;
     if(!loadedNow){ loadLevel(currentLevelIndex); netPlaceLocalAtSpawn(); }   /* чистый старт */
     if(netModalEl.classList.contains('show')) closeNetModal();
+    netUpdateSpectator();
     netRaceBegin();
   }
+  netEnsureTrack(info);
+  netUpdateSpectator();
 }
 
 /* Поставить местный дрон в персональную точку спавна (не в общий ноль). */
@@ -2263,7 +2508,9 @@ const netRace = {
   ready: new Set(),    // id участников, подтвердивших готовность (для хоста)
   results: new Map(),  // id -> { name, prog, time, done, failed, fin }
   lastSent: 0,
+  startedAt: 0,
   selfFailed: false,
+  spectatorResultShown: false,
 };
 const countdownEl = document.getElementById('countdown');
 const raceBoardEl = document.getElementById('raceBoard');
@@ -2278,8 +2525,11 @@ function netBroadcast(obj){
 function netRaceIsHost(){ return !!(netRoom.info && netRoom.selfId === netRoom.info.host_user_id); }
 function netRaceTotal(){ const lv = LEVELS[currentLevelIndex]; return (lv && lv.gates) ? lv.gates.length : 0; }
 function netRaceStop(){
+  if(netRace.spectatorResultShown && overlayEl && overlayEl.classList.contains('show')) hideOverlay();
   netRace.active = false; netRace.phase = 'idle';
   netRace.ready.clear(); netRace.results.clear();
+  netRace.startedAt = 0;
+  netRace.spectatorResultShown = false;
   if(raceBoardEl) raceBoardEl.classList.remove('show');
   if(countdownEl) countdownEl.classList.remove('show');
 }
@@ -2289,6 +2539,8 @@ function netRaceBegin(){
   netRace.active = true;
   netRace.results.clear(); netRace.ready.clear();
   netRace.selfFailed = false;
+  netRace.startedAt = 0;
+  netRace.spectatorResultShown = false;
   netRace.phase = 'waiting';
   netRace.waitUntil = performance.now() + (netRaceIsHost() ? 6000 : 9000);   /* не ждём «готов» вечно */
   netRaceSendState(true);
@@ -2310,8 +2562,12 @@ function netRaceGo(){
 function netRaceReset(){
   netRace.results.clear(); netRace.ready.clear();
   netRace.selfFailed = false;
+  netRace.startedAt = 0;
+  netRace.spectatorResultShown = false;
+  if(overlayEl && overlayEl.classList.contains('show')) hideOverlay();
   loadLevel(currentLevelIndex);
   netPlaceLocalAtSpawn();
+  netUpdateSpectator();
   netRaceBegin();
 }
 function netRaceHandle(fromId, m){
@@ -2340,11 +2596,12 @@ function netRaceHandle(fromId, m){
     });
     updateRaceBoard();
     if(netRace.phase === 'done') renderRaceResult();
+    netSpectatorMaybeResult();
     return;
   }
 }
 function netRaceSendState(force){
-  if(!netRace.active) return;
+  if(!netRace.active || netSelfIsSpectator()) return;
   const now = performance.now();
   if(!force && now - netRace.lastSent < 300) return;
   netRace.lastSent = now;
@@ -2416,10 +2673,40 @@ function showRaceResult(){
 function renderRaceResult(){
   const total = netRaceTotal();
   const rows = netRaceSortRows();
+  const host = netRaceIsHost();
   overlayEl.innerHTML = '<div class="card"><h2>Результаты гонки</h2>' +
     '<div class="results">' + rows.map((r, i) => netRaceRowHtml(r, i, total, true)).join('') + '</div>' +
-    '<div class="btns"><button data-action="close">Продолжить</button>' +
-    '<button class="primary" data-action="menu">К уровням</button></div></div>';
+    '<div class="btns">' +
+      (host ? '<button class="primary" data-action="restart">🔁 Перезапустить гонку</button>' : '') +
+      '<button data-action="close">Продолжить</button>' +
+      '<button data-action="menu">К уровням</button></div>' +
+    (host ? '' : '<p>Перезапустить гонку может хост.</p>') +
+    '</div>';
+}
+/* Итоги для админа-наблюдателя: показываем, когда оба гонщика финишировали/сошли. */
+function netSpectatorMaybeResult(){
+  if(!netSelfIsSpectator() || !netRace.active || netRace.spectatorResultShown) return;
+  const racers = [...netRoom.peers.values()].filter(p => (p.role || 'racer') !== 'spectator');
+  if(!racers.length) return;
+  const allDone = racers.every(p => {
+    const r = netRace.results.get(p.userId);
+    return !!(r && (r.done || r.failed));
+  });
+  if(!allDone) return;
+  netRace.spectatorResultShown = true;
+  showSpectatorResult();
+}
+function showSpectatorResult(){
+  const total = netRaceTotal();
+  const rows = netRaceSortRows();
+  overlayEl.innerHTML = '<div class="card"><h2>Результаты парной гонки</h2>' +
+    '<div class="results">' + rows.map((r, i) => netRaceRowHtml(r, i, total, true)).join('') + '</div>' +
+    '<div class="btns">' +
+      '<button class="primary" data-action="restart">🔁 Перезапустить гонку</button>' +
+      '<button data-action="close">Продолжить просмотр</button>' +
+      '<button data-action="leave">Выйти из комнаты</button></div></div>';
+  overlayEl.classList.add('show');
+  makeCollapsible(overlayEl);
 }
 
 /* ---------- участники и пары ---------- */
@@ -2429,14 +2716,14 @@ function applyParticipants(list){
     const id = Number(part.user_id);
     if(!id || id === netRoom.selfId) continue;
     seen.add(id);
-    ensurePeer(id, part.name, part.slot);
+    ensurePeer(id, part.name, part.slot, part.role);
   }
   for(const id of Array.from(netRoom.peers.keys())){
     if(!seen.has(id)) removePeer(id);
   }
 }
 
-function ensurePeer(userId, name, slot){
+function ensurePeer(userId, name, slot, role){
   userId = Number(userId);
   let p = netRoom.peers.get(userId);
   if(!p){
@@ -2445,6 +2732,7 @@ function ensurePeer(userId, name, slot){
       userId,
       name: name || 'Пилот',
       slot: slot != null ? Number(slot) : 0,
+      role: role || 'racer',
       pc: null, dc: null,
       targetPos: new THREE.Vector3(s.x, s.y, s.z),
       targetQuat: new THREE.Quaternion(),
@@ -2455,9 +2743,13 @@ function ensurePeer(userId, name, slot){
   }
   if(name) p.name = name;
   if(slot != null) p.slot = Number(slot);
+  if(role && role !== p.role){
+    p.role = role;
+    if(role === 'spectator' && p.obj) showPeerDrone(p, false);
+  }
   if(NET_RELAY){
     /* Релей: соединение одно (WebSocket), борт показываем сразу. */
-    if(!p.open){ p.open = true; showPeerDrone(p, true); }
+    if(!p.open){ p.open = true; if(p.role !== 'spectator') showPeerDrone(p, true); }
   } else if(!p.pc){
     createPeerConnection(p);
   }
@@ -2569,6 +2861,11 @@ function netIceDone(p){
 
 /* ---------- удалённые борта и подписи имён ---------- */
 function showPeerDrone(p, on){
+  if(on && (p.role || 'racer') === 'spectator'){
+    /* Админ-наблюдатель не летит: его борт другим не показываем. */
+    if(p.obj) showPeerDrone(p, false);
+    return;
+  }
   if(on && !p.obj){
     const built = makeDroneMesh(DRONE_MODELS[0]);
     p.obj = built.group;
@@ -2648,6 +2945,10 @@ function removePeer(userId){
   try{ if(p.dc) p.dc.close(); }catch(_){}
   try{ if(p.pc) p.pc.close(); }catch(_){}
   netRoom.peers.delete(userId);
+  netRace.ready.delete(userId);
+  netRace.results.delete(userId);
+  if(netRace.active) updateRaceBoard();
+  netSpectatorMaybeResult();
   updateNetStatusText();
 }
 
@@ -2664,6 +2965,7 @@ setInterval(()=>{
 
 setInterval(()=>{
   netRaceSendState();
+  if(netSelfIsSpectator()) return;
   if(NET_RELAY){
     if(!netRoom.active || !relayReady) return;
     const qr = state.quat;
@@ -2683,6 +2985,12 @@ setInterval(()=>{
   }
 }, 50);
 
+/* Страховка: если сетевая игра уже идёт, а локально загружен не тот уровень,
+   принудительно подхватываем трассу из параметров комнаты (раз в секунду). */
+setInterval(()=>{
+  if(netRoom.active && netRoom.info && netRoom.info.started) netEnsureTrack(netRoom.info);
+}, 1000);
+
 /* Страховка: если у инициатора за ~7 с канал не открылся — пересоздаём связь. */
 setInterval(netPeerWatchdog, 3000);
 function netPeerWatchdog(){
@@ -2700,6 +3008,445 @@ function netPeerWatchdog(){
       createPeerConnection(p);
     }
   }
+}
+
+/* ============================================================
+   Парная гонка: админ-наблюдатель, сплит-скрин FPV и статистика.
+   Два вида строятся по st-пакетам гонщиков (позиция + кватернион).
+   ============================================================ */
+const specHudEl = document.getElementById('specHud');
+let netSpectator = false;
+let specHudBuilt = false;
+let specLastHud = 0;
+const SPEC_FOV = 105;
+const specCamL = new THREE.PerspectiveCamera(SPEC_FOV, 1, 0.1, 1200);
+const specCamR = new THREE.PerspectiveCamera(SPEC_FOV, 1, 0.1, 1200);
+const specCamIdle = new THREE.PerspectiveCamera(62, 1, 0.1, 1200);
+const _specV = new THREE.Vector3();
+/* Мини-карта лесной трассы для админа-наблюдателя. */
+const SPEC_MAP_PX = 220;
+let specMapCanvas = null;
+let specMapCtx = null;
+let specMapData = null;
+let specMapLegendKey = '';
+const _specMapV = new THREE.Vector3();
+
+function netUpdateSpectator(){
+  const on = netSelfIsSpectator();
+  const changed = (on !== netSpectator);
+  netSpectator = on;
+  document.body.classList.toggle('spec-mode', on);
+  if(on){
+    drone.visible = false;
+    shadowBlob.visible = false;
+    guideArrow.visible = false;
+    if(changed) specHudBuilt = false;
+  } else {
+    drone.visible = camMode !== 3;
+    shadowBlob.visible = true;
+    guideArrow.visible = false;   /* updateGuide вернёт, если нужно */
+    if(changed && specHudEl) specHudEl.innerHTML = '';
+    specHudBuilt = false;
+  }
+}
+
+function specRacers(){
+  return [...netRoom.peers.values()]
+    .filter(p => (p.role || 'racer') !== 'spectator')
+    .sort((a, b) => (a.slot || 0) - (b.slot || 0) || a.userId - b.userId)
+    .slice(0, 2);
+}
+
+function specTelemetry(p, now){
+  if(!p || !p.obj) return;
+  const pos = p.obj.position;
+  if(p._specLastT){
+    const dt = (now - p._specLastT) / 1000;
+    if(dt > 0.08){
+      const inst = Math.hypot(
+        pos.x - p._specLastPos.x,
+        pos.y - p._specLastPos.y,
+        pos.z - p._specLastPos.z
+      ) / dt;
+      p.specSpeed = (p.specSpeed || 0) * 0.55 + inst * 0.45;
+      p._specLastPos.copy(pos);
+      p._specLastT = now;
+    }
+  } else {
+    p._specLastPos = pos.clone();
+    p._specLastT = now;
+    p.specSpeed = 0;
+  }
+  p.specAlt = Math.max(0, pos.y - GROUND_REST - groundHeightAt(pos.x, pos.z));
+}
+
+function specApplyCamera(cam, p){
+  if(!p) return false;
+  const obj = p.obj;
+  const pos = obj ? obj.position : p.targetPos;
+  const quat = obj ? obj.quaternion : p.targetQuat;
+  cam.position.copy(pos);
+  cam.position.add(_specV.set(0, 0.22, 0.55).applyQuaternion(quat));
+  cam.quaternion.copy(quat);
+  cam.rotateY(Math.PI);
+  cam.rotateX(0.08);
+  cam.updateMatrixWorld(true);
+  return true;
+}
+
+function specIdleCamera(aspect){
+  const lv = LEVELS[currentLevelIndex] || {};
+  const s = lv.start || { x:0, y:GROUND_REST, z:0 };
+  specCamIdle.aspect = aspect;
+  specCamIdle.updateProjectionMatrix();
+  specCamIdle.position.set(s.x + 10, s.y + 8, s.z - 16);
+  specCamIdle.up.set(0, 1, 0);
+  specCamIdle.lookAt(s.x, s.y + 2, s.z);
+  specCamIdle.updateMatrixWorld(true);
+  return specCamIdle;
+}
+
+/* ---------- мини-карта лесной трассы ---------- */
+function specMapPrepare(){
+  if(specMapData) return specMapData;
+  const pts = [];
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  const add = (x, z) => {
+    pts.push({ x, z });
+    if(x < minX) minX = x; if(x > maxX) maxX = x;
+    if(z < minZ) minZ = z; if(z > maxZ) maxZ = z;
+  };
+  for(let i = 0; i <= 240; i++){
+    const p = forestPath(i / 240);
+    add(p.x, p.z);
+  }
+  const sp = forestPath(-1/80);
+  add(sp.x, sp.z);
+  const pad = 18;
+  const span = Math.max(maxX - minX, maxZ - minZ) + pad * 2;
+  specMapData = {
+    pts,
+    minX: (minX + maxX) / 2 - span / 2,
+    minZ: (minZ + maxZ) / 2 - span / 2,
+    span,
+  };
+  return specMapData;
+}
+function specMapXY(x, z, m){
+  const pad = 14;
+  const s = (SPEC_MAP_PX - pad * 2) / m.span;
+  return { x: pad + (x - m.minX) * s, y: pad + (z - m.minZ) * s };
+}
+function specMapDraw(racers){
+  if(!specMapCtx || !specMapCanvas) return;
+  const m = specMapPrepare();
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  const px = Math.round(SPEC_MAP_PX * dpr);
+  if(specMapCanvas.width !== px || specMapCanvas.height !== px){
+    specMapCanvas.width = px;
+    specMapCanvas.height = px;
+  }
+  const ctx = specMapCtx;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, SPEC_MAP_PX, SPEC_MAP_PX);
+
+  ctx.fillStyle = 'rgba(9,16,13,.92)';
+  ctx.fillRect(0, 0, SPEC_MAP_PX, SPEC_MAP_PX);
+  ctx.strokeStyle = 'rgba(159,208,255,.07)';
+  ctx.lineWidth = 1;
+  for(let i = 1; i < 5; i++){
+    const p = i * SPEC_MAP_PX / 5;
+    ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, SPEC_MAP_PX); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, p); ctx.lineTo(SPEC_MAP_PX, p); ctx.stroke();
+  }
+
+  /* Дорога-кольцо. */
+  ctx.beginPath();
+  m.pts.forEach((pt, i) => {
+    const q = specMapXY(pt.x, pt.z, m);
+    if(i) ctx.lineTo(q.x, q.y); else ctx.moveTo(q.x, q.y);
+  });
+  ctx.closePath();
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = 'rgba(159,208,255,.16)';
+  ctx.lineWidth = 9;
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(150,160,172,.92)';
+  ctx.lineWidth = 3.2;
+  ctx.stroke();
+
+  /* Ворота. */
+  ctx.fillStyle = 'rgba(255,224,102,.42)';
+  for(let i = 0; i < 40; i++){
+    const p = forestPath(i / 40);
+    const q = specMapXY(p.x, p.z, m);
+    ctx.beginPath();
+    ctx.arc(q.x, q.y, 1.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  /* Старт/финиш. */
+  const sp = forestPath(-1/80);
+  const sq = specMapXY(sp.x, sp.z, m);
+  ctx.fillStyle = '#39d353';
+  ctx.fillRect(sq.x - 3, sq.y - 3, 6, 6);
+  ctx.font = '700 9px system-ui, "Segoe UI", Arial, sans-serif';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'bottom';
+  ctx.fillStyle = '#c8ffd5';
+  ctx.fillText('СТАРТ', sq.x - 7, sq.y - 7);
+
+  /* Позиции гонщиков. Если метки почти совпали (старт), разводим их. */
+  const colors = ['#ffe066', '#5cd6ff'];
+  const marks = [];
+  for(let i = 0; i < racers.length; i++){
+    const p = racers[i];
+    if(!p) continue;
+    const pos = p.obj ? p.obj.position : p.targetPos;
+    if(!pos) continue;
+    const q = specMapXY(pos.x, pos.z, m);
+    const quat = p.obj ? p.obj.quaternion : p.targetQuat;
+    _specMapV.set(0, 0, 1).applyQuaternion(quat);
+    marks.push({ q, ang: Math.atan2(_specMapV.x, _specMapV.z), color: colors[i], num: i + 1 });
+  }
+  let offsets = marks.map(() => ({ x: 0, y: 0 }));
+  if(marks.length === 2){
+    const dx = marks[1].q.x - marks[0].q.x;
+    const dy = marks[1].q.y - marks[0].q.y;
+    const d = Math.hypot(dx, dy);
+    if(d < 16){
+      const ux = d > 0.01 ? dx / d : 1;
+      const uy = d > 0.01 ? dy / d : 0;
+      const ox = -uy * 6, oy = ux * 6;
+      offsets = [{ x: ox, y: oy }, { x: -ox, y: -oy }];
+    }
+  }
+  for(let i = 0; i < marks.length; i++){
+    const mk = marks[i];
+    const off = offsets[i];
+    const cx = mk.q.x + off.x, cy = mk.q.y + off.y;
+
+    if(off.x || off.y){
+      ctx.strokeStyle = 'rgba(255,255,255,.32)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(mk.q.x, mk.q.y);
+      ctx.lineTo(cx, cy);
+      ctx.stroke();
+    }
+
+    ctx.strokeStyle = mk.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.sin(mk.ang) * 11, cy + Math.cos(mk.ang) * 11);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, 5.4, 0, Math.PI * 2);
+    ctx.fillStyle = mk.color;
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(6,12,20,.9)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    ctx.fillStyle = '#0b0f14';
+    ctx.font = '700 9px system-ui, "Segoe UI", Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(mk.num), cx, cy + 0.5);
+  }
+}
+function specMapLegendUpdate(racers){
+  const el = document.getElementById('specMapLegend');
+  if(!el) return;
+  const key = racers.map(p => (p && (p.name || 'Гонщик'))).join('|');
+  if(key === specMapLegendKey) return;
+  specMapLegendKey = key;
+  if(!racers.length){
+    el.innerHTML = '<span class="lg">Ожидание гонщиков…</span>';
+    return;
+  }
+  el.innerHTML = racers.map((p, i) =>
+    '<span class="lg lg' + (i + 1) + '">' + (i + 1) + ' · ' +
+    escapeHtml((p && p.name) || 'Гонщик') + '</span>').join('');
+}
+function specMapUpdate(racers){
+  const lv = LEVELS[currentLevelIndex] || {};
+  const forest = (lv.raceId === 'forest' || lv.terrain === 'forest');
+  const box = document.getElementById('specMapBox');
+  if(box) box.classList.toggle('show', forest);
+  if(!forest) return;
+  specMapLegendUpdate(racers);
+  specMapDraw(racers);
+}
+
+function specHudBuild(){
+  if(!specHudEl || specHudBuilt) return;
+  specHudEl.innerHTML =
+    '<div class="spec-top">' +
+      '<span class="spec-badge">НАБЛЮДАТЕЛЬ · ПАРНАЯ ГОНКА</span>' +
+      '<span id="specTrackName" class="spec-track"></span>' +
+      '<span id="specClock" class="spec-clock">0.0 с</span>' +
+      '<span id="specFinish" class="spec-finish">финиш 0/2</span>' +
+      '<button type="button" id="specMenuBtn" class="spec-btn">Панель</button>' +
+      '<button type="button" id="specLeaveBtn" class="spec-btn spec-exit">Выйти</button>' +
+    '</div>' +
+    '<div class="spec-half spec-left">' +
+      '<div class="spec-label"><b id="specNameL">—</b><i id="specStateL">Ожидание гонщика</i></div>' +
+      '<div class="spec-stats" id="specStatsL"></div>' +
+    '</div>' +
+    '<div class="spec-half spec-right">' +
+      '<div class="spec-label"><b id="specNameR">—</b><i id="specStateR">Ожидание гонщика</i></div>' +
+      '<div class="spec-stats" id="specStatsR"></div>' +
+    '</div>' +
+    '<div class="spec-divider"></div>' +
+    '<div class="spec-map-box" id="specMapBox">' +
+      '<div class="spec-map-title">ЛЕСНАЯ ДОРОГА · КАРТА</div>' +
+      '<canvas id="specMap" width="220" height="220"></canvas>' +
+      '<div class="spec-map-legend" id="specMapLegend"></div>' +
+    '</div>';
+  specMapCanvas = document.getElementById('specMap');
+  specMapCtx = specMapCanvas ? specMapCanvas.getContext('2d') : null;
+  specMapLegendKey = '';
+  const menu = document.getElementById('specMenuBtn');
+  if(menu) menu.addEventListener('click', ()=> openNetModal());
+  const leave = document.getElementById('specLeaveBtn');
+  if(leave) leave.addEventListener('click', ()=> netLeave());
+  specHudBuilt = true;
+}
+
+function specPaneUpdate(side, p, rows, total){
+  const nameEl = document.getElementById('specName' + side);
+  const stateEl = document.getElementById('specState' + side);
+  const statsEl = document.getElementById('specStats' + side);
+  if(!nameEl || !stateEl || !statsEl) return;
+  const num = side === 'L' ? '1' : '2';
+  if(!p){
+    nameEl.textContent = num + ' · —';
+    stateEl.textContent = 'Ожидание гонщика';
+    statsEl.textContent = '';
+    return;
+  }
+  const r = netRace.results.get(p.userId);
+  let state = 'на старте';
+  if(r){
+    if(r.done) state = 'финиш · ' + ((r.fin != null ? r.fin : r.time) || 0).toFixed(2) + ' с';
+    else if(r.failed) state = 'сход';
+    else state = 'в гонке';
+  } else if(netRace.phase === 'running'){
+    state = 'в гонке';
+  }
+  const idx = rows.findIndex(x => x.id === p.userId);
+  const placeVisible = netRace.phase === 'running' || (r && (r.done || r.failed));
+  const place = (placeVisible && idx >= 0) ? (idx + 1) + '-е' : '—';
+  const prog = r ? r.prog : 0;
+  const time = r ? r.time : 0;
+  nameEl.textContent = num + ' · ' + (p.name || 'Гонщик');
+  stateEl.textContent = state;
+  statsEl.textContent =
+    'Место: ' + place +
+    '\nВорота: ' + prog + '/' + total +
+    '\nВремя: ' + time.toFixed(1) + ' с' +
+    '\nСкорость: ' + (p.specSpeed || 0).toFixed(1) + ' м/с' +
+    '\nВысота: ' + (p.specAlt || 0).toFixed(1) + ' м';
+}
+
+function specHudUpdate(now){
+  if(!netSpectator) return;
+  if(!specHudBuilt) specHudBuild();
+  if(now - specLastHud < 100) return;
+  specLastHud = now;
+  const racers = specRacers();
+  const rows = netRaceSortRows();
+  const total = netRaceTotal();
+  specTelemetry(racers[0], now);
+  specTelemetry(racers[1], now);
+  specPaneUpdate('L', racers[0], rows, total);
+  specPaneUpdate('R', racers[1], rows, total);
+
+  const trackEl = document.getElementById('specTrackName');
+  const clockEl = document.getElementById('specClock');
+  const finishEl = document.getElementById('specFinish');
+  const lv = LEVELS[currentLevelIndex] || {};
+  if(trackEl) trackEl.textContent = lv.name || '';
+  const clock = netRace.startedAt ? (performance.now() - netRace.startedAt) / 1000 : 0;
+  if(clockEl) clockEl.textContent = clock.toFixed(1) + ' с';
+  if(finishEl){
+    const fin = rows.filter(r => r.done).length;
+    finishEl.textContent = 'финиш ' + fin + '/' + (racers.length || 2);
+  }
+  specMapUpdate(racers);
+}
+
+function renderSpectator(){
+  const W = innerWidth, H = innerHeight;
+  if(!W || !H) return;
+  const racers = specRacers();
+  const leftP = racers[0] || null;
+  const rightP = racers[1] || null;
+  const horizontal = W > 700 && (W / H) > 0.9;
+
+  if(!leftP && !rightP){
+    renderer.setScissorTest(false);
+    renderer.setViewport(0, 0, W, H);
+    renderer.render(scene, specIdleCamera(W / H));
+    return;
+  }
+
+  const okL = specApplyCamera(specCamL, leftP);
+  const okR = specApplyCamera(specCamR, rightP);
+  renderer.setScissorTest(true);
+
+  if(horizontal){
+    const hw = Math.floor(W / 2);
+    let camL = specCamL;
+    if(okL){ specCamL.aspect = hw / H; specCamL.updateProjectionMatrix(); }
+    else camL = specIdleCamera(hw / H);
+    renderer.setViewport(0, 0, hw, H);
+    renderer.setScissor(0, 0, hw, H);
+    /* Камера стоит в носу борта — сам борт в этом проходе не рисуем. */
+    const wasL = leftP && leftP.obj ? leftP.obj.visible : true;
+    if(leftP && leftP.obj) leftP.obj.visible = false;
+    renderer.render(scene, camL);
+    if(leftP && leftP.obj) leftP.obj.visible = wasL;
+
+    let camR = specCamR;
+    if(okR){ specCamR.aspect = (W - hw) / H; specCamR.updateProjectionMatrix(); }
+    else camR = specIdleCamera((W - hw) / H);
+    renderer.setViewport(hw, 0, W - hw, H);
+    renderer.setScissor(hw, 0, W - hw, H);
+    const wasR = rightP && rightP.obj ? rightP.obj.visible : true;
+    if(rightP && rightP.obj) rightP.obj.visible = false;
+    renderer.render(scene, camR);
+    if(rightP && rightP.obj) rightP.obj.visible = wasR;
+  } else {
+    const hh = Math.floor(H / 2);
+    /* Верхняя половина — левый гонщик, нижняя — правый (y=0 в three.js снизу). */
+    let camL = specCamL;
+    if(okL){ specCamL.aspect = W / (H - hh); specCamL.updateProjectionMatrix(); }
+    else camL = specIdleCamera(W / (H - hh));
+    renderer.setViewport(0, hh, W, H - hh);
+    renderer.setScissor(0, hh, W, H - hh);
+    const wasL = leftP && leftP.obj ? leftP.obj.visible : true;
+    if(leftP && leftP.obj) leftP.obj.visible = false;
+    renderer.render(scene, camL);
+    if(leftP && leftP.obj) leftP.obj.visible = wasL;
+
+    let camR = specCamR;
+    if(okR){ specCamR.aspect = W / hh; specCamR.updateProjectionMatrix(); }
+    else camR = specIdleCamera(W / hh);
+    renderer.setViewport(0, 0, W, hh);
+    renderer.setScissor(0, 0, W, hh);
+    const wasR = rightP && rightP.obj ? rightP.obj.visible : true;
+    if(rightP && rightP.obj) rightP.obj.visible = false;
+    renderer.render(scene, camR);
+    if(rightP && rightP.obj) rightP.obj.visible = wasR;
+  }
+
+  renderer.setScissorTest(false);
+  renderer.setViewport(0, 0, W, H);
 }
 
 /* ============================================================
@@ -3908,7 +4655,7 @@ const LEVELS = [
     name:'Серпантин (UTT-1)',
     brief:'Змейка по мотивам MultiGP UTT-1: три длинных прохода и быстрый возврат. Норматив — 55 с, три звезды — до 36 с.',
     start:{x:0,y:GROUND_REST,z:0,yaw:0},
-    race:true, map:'stadium',
+    race:true, raceId:'utt1', map:'stadium',
     timeLimit:85,
     gates:[
       { type:'ring', pos:[  0,5,16], r:2.9, faceYaw: 0 },
@@ -3927,7 +4674,7 @@ const LEVELS = [
     name:'Цунами (UTT-2)',
     brief:'Петля с длинной прямой и пикированием сквозь вертикальные ворота (MultiGP UTT-2). Три звезды — до 29 с.',
     start:{x:0,y:GROUND_REST,z:0,yaw:0},
-    race:true, map:'stadium',
+    race:true, raceId:'utt2', map:'stadium',
     timeLimit:70,
     gates:[
       { type:'ring', pos:[  0,4,16], r:2.9, faceYaw: 0 },
@@ -3944,7 +4691,7 @@ const LEVELS = [
     name:'Спираль (UTT-5)',
     brief:'Раковина Nautilus: ворота закручиваются внутрь с постоянным снижением (MultiGP UTT-5). Три звезды — до 34 с.',
     start:{x:0,y:GROUND_REST,z:0,yaw:0},
-    race:true, map:'stadium',
+    race:true, raceId:'utt5', map:'stadium',
     timeLimit:80,
     gates:[
       { type:'ring', pos:[ 22,8,  6], r:3.0, faceYaw: 1.30 },
@@ -3962,7 +4709,7 @@ const LEVELS = [
     name:'Высокое напряжение (UTT-4)',
     brief:'Городской слалом со сменой направления между домами и разворотом домой (MultiGP UTT-4). Три звезды — до 34 с.',
     start:{x:0,y:GROUND_REST,z:0,yaw:0},
-    race:true, map:'stadium',
+    race:true, raceId:'utt4', map:'stadium',
     timeLimit:80,
     gates:[
       { type:'ring', pos:[  0,5,14], r:2.9, faceYaw: 0 },
@@ -3985,6 +4732,7 @@ const LEVELS = [
     })(),
     terrain:'forest',
     race:true,
+    raceId:'forest',
     timeLimit:260,
     gates: buildForestTrack(40),
   },
@@ -4637,6 +5385,8 @@ overlayEl.addEventListener('click', e=>{
   if(a === 'next') nextLevel();
   else if(a === 'retry') restartLevel();
   else if(a === 'close') hideOverlay();
+  else if(a === 'restart'){ netRestartRace(); }
+  else if(a === 'leave'){ hideOverlay(); netLeave(); }
   else if(a === 'menu'){ hideOverlay(); openLevelMenu(); }
 });
 
@@ -4722,20 +5472,42 @@ function animate(){
     if(netRace.phase === 'countdown'){
       netRace.countdown -= dt;
       renderCountdown();
-      if(netRace.countdown <= 0){ netRace.phase = 'running'; renderCountdown(); netRaceSendState(true); }
+      if(netRace.countdown <= 0){
+        netRace.phase = 'running';
+        netRace.startedAt = performance.now();
+        renderCountdown();
+        netRaceSendState(true);
+      }
     } else if(performance.now() > netRace.waitUntil){
       netRaceGo();   /* хост — по готовности/таймауту; гость — аварийный таймаут */
     }
   }
-  if(!paused && !frozen){ updatePhysics(dt); updateLevel(dt); }
-  renderer.render(scene, camera);
-  if(camMode === 3) drawFpvHud();
+  if(!paused && !frozen && !netSpectator){ updatePhysics(dt); updateLevel(dt); }
+  if(netSpectator){
+    specHudUpdate(performance.now());
+    if(netRoom.info && netRoom.info.started){
+      renderSpectator();
+    } else {
+      renderer.setScissorTest(false);
+      renderer.setViewport(0, 0, innerWidth, innerHeight);
+      renderer.render(scene, camera);
+    }
+  } else {
+    renderer.render(scene, camera);
+  }
+  if(camMode === 3 && !netSpectator) drawFpvHud();
 }
 loadLevel(0);
 animate();
 
 /* Стартовый экран при загрузке. */
 showStart(1);
+/* Переход с сайта в парную гонку на релее: сразу открываем сетевое окно
+   и подключаемся к релею, чтобы ученику не нужно было искать меню. */
+if(NET_AUTO_PAIR){
+  hideStart();
+  openNetModal();
+}
 
 /* ============================================================
    Resize

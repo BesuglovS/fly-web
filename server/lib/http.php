@@ -20,6 +20,8 @@ const FLY_DEFAULT_MAX   = 4;                   // размер комнаты п
 const FLY_MAX_PLAYERS   = 8;                   // жёсткий потолок участников (mesh)
 const FLY_MAX_OPTIONS   = [2, 4, 6, 8];        // разрешённые размеры комнаты
 const FLY_PUBLIC_MAX    = 4;                   // больше — только администратор
+const FLY_PAIR_MAX      = 3;                   // парная гонка: наблюдатель-админ + 2 гонщика
+const FLY_RACES         = ['utt1', 'utt2', 'utt5', 'utt4', 'forest'];
 const FLY_SDP_MAX_BYTES = 32768;
 const FLY_NAME_MAX      = 60;
 const FLY_POLL_WINDOW   = 60;   // окно rate-limit, сек
@@ -129,8 +131,8 @@ function flyRateLimit(PDO $db, int $userId): void
     }
 }
 
-/** @return array<int,array{user_id:int,name:string,slot:int}> */
-function flyParticipants(PDO $db, int $roomId): array
+/** @return array<int,array{user_id:int,name:string,slot:int,role:string}> */
+function flyParticipants(PDO $db, int $roomId, ?int $spectatorId = null): array
 {
     $stmt = $db->prepare(
         'SELECT user_id, name, slot FROM players WHERE room_id = ? ORDER BY joined_at ASC, user_id ASC'
@@ -142,6 +144,7 @@ function flyParticipants(PDO $db, int $roomId): array
             'user_id' => (int) $row['user_id'],
             'name' => (string) $row['name'],
             'slot' => (int) $row['slot'],
+            'role' => ($spectatorId !== null && (int) $row['user_id'] === $spectatorId) ? 'spectator' : 'racer',
         ];
     }
     return $out;
@@ -160,6 +163,12 @@ function flySanitizeMap(?string $map): string
 function flySanitizeMode(?string $mode): string
 {
     return in_array((string) $mode, FLY_MODES, true) ? (string) $mode : 'angle';
+}
+
+/** ID гоночной трассы; пустая строка — не задана/неизвестна. */
+function flySanitizeRace(?string $race): string
+{
+    return in_array((string) $race, FLY_RACES, true) ? (string) $race : '';
 }
 
 function flySanitizeTitle(?string $title): string
@@ -221,6 +230,16 @@ function flyEnsureHost(PDO $db, int $roomId): void
     if ($chk->fetchColumn()) {
         return;
     }
+
+    // В парной гонке админ — обязательный наблюдатель: без него комната
+    // закрывается, а не передаёт хост гонщику.
+    $params = json_decode((string) $room['params'], true);
+    if (!empty($params['pair'])) {
+        $db->prepare('DELETE FROM players WHERE room_id = ?')->execute([$roomId]);
+        $db->prepare('DELETE FROM rooms WHERE id = ?')->execute([$roomId]);
+        return;
+    }
+
     $stmt = $db->prepare(
         'SELECT user_id FROM players WHERE room_id = ? ORDER BY joined_at ASC, user_id ASC LIMIT 1'
     );
@@ -246,6 +265,7 @@ function flyRoomInfo(PDO $db, int $roomId): ?array
         'title' => (string) $room['title'],
         'map' => (string) $room['map'],
         'params' => is_array($params) ? $params : ['mode' => 'angle'],
+        'pair' => is_array($params) && !empty($params['pair']),
         'host_user_id' => $hostId,
         'host_name' => (string) ($hn->fetchColumn() ?: ''),
         'started' => (int) $room['started'] === 1,
@@ -259,15 +279,23 @@ function flySnapshot(PDO $db, int $roomId, int $viewerId, string $viewerName, bo
     $slotStmt = $db->prepare('SELECT slot FROM players WHERE user_id = ?');
     $slotStmt->execute([$viewerId]);
     $room = flyRoomInfo($db, $roomId);
+    $pair = is_array($room) && !empty($room['params']['pair']);
+    $spectatorId = $pair ? (int) ($room['host_user_id'] ?? 0) : null;
     return [
         'room' => $room,
-        'self' => ['id' => $viewerId, 'name' => $viewerName, 'slot' => (int) $slotStmt->fetchColumn()],
-        'participants' => flyParticipants($db, $roomId),
-        'max' => $room['max'] ?? FLY_DEFAULT_MAX,
+        'self' => [
+            'id' => $viewerId,
+            'name' => $viewerName,
+            'slot' => (int) $slotStmt->fetchColumn(),
+            'role' => ($spectatorId !== null && $viewerId === $spectatorId) ? 'spectator' : 'racer',
+        ],
+        'participants' => flyParticipants($db, $roomId, $spectatorId),
+        'max' => is_array($room) ? (int) $room['max'] : FLY_DEFAULT_MAX,
         'maxOptions' => flyAllowedMaxOptions($isAdmin),
         'maxHard' => $isAdmin ? FLY_MAX_PLAYERS : FLY_PUBLIC_MAX,
         'isAdmin' => $isAdmin,
         'maps' => FLY_MAPS,
+        'races' => FLY_RACES,
     ];
 }
 
@@ -307,6 +335,13 @@ function flyApplyControl(PDO $db, int $roomId, int $userId, array $control, int 
     if (array_key_exists('mode', $control)) {
         $params['mode'] = flySanitizeMode((string) $control['mode']);
     }
+    if (array_key_exists('race', $control)) {
+        $race = flySanitizeRace((string) $control['race']);
+        if ($race !== '') {
+            $params['race'] = $race;
+        }
+    }
+    $isPair = !empty($params['pair']);
 
     $started = array_key_exists('started', $control)
         ? (int) (!empty($control['started']) ? 1 : 0)
@@ -321,8 +356,9 @@ function flyApplyControl(PDO $db, int $roomId, int $userId, array $control, int 
     }
 
     // Размер комнаты: нельзя опустить ниже числа текущих участников.
+    // У парной гонки размер фиксирован (3), менять его нельзя.
     $max = (int) $room['max'];
-    if (array_key_exists('max', $control)) {
+    if (!$isPair && array_key_exists('max', $control)) {
         $cand = flyClampMaxForUser(flySanitizeMax($control['max']), $isAdmin);
         $cnt = $db->prepare('SELECT COUNT(*) FROM players WHERE room_id = ?');
         $cnt->execute([$roomId]);
@@ -360,16 +396,21 @@ function flyUpsertPlayer(PDO $db, int $userId, string $name, int $roomId, int $n
     )->execute([$userId, $name, $roomId, $now, $now, $slot]);
 }
 
-function flyCreateRoom(PDO $db, int $userId, string $name, string $title, int $now, int $max = FLY_DEFAULT_MAX): int
+function flyCreateRoom(PDO $db, int $userId, string $name, string $title, int $now, int $max = FLY_DEFAULT_MAX, bool $pair = false): int
 {
     if ($title === '') {
-        $title = mb_substr('Игра: ' . $name, 0, 60);
+        $title = mb_substr($pair ? 'Парная гонка' : 'Игра: ' . $name, 0, 60);
     }
-    $max = flySanitizeMax($max);
+    $max = $pair ? FLY_PAIR_MAX : flySanitizeMax($max);
+    $params = ['mode' => 'angle'];
+    if ($pair) {
+        $params['pair'] = true;
+        $params['race'] = 'utt1';
+    }
     $db->prepare(
         'INSERT INTO rooms (title, map, params, host_user_id, started, max, created_at)
          VALUES (?, ?, ?, ?, 0, ?, ?)'
-    )->execute([$title, 'meadow', json_encode(['mode' => 'angle']), $userId, $max, $now]);
+    )->execute([$title, 'meadow', json_encode($params), $userId, $max, $now]);
     $roomId = (int) $db->lastInsertId();
     flyUpsertPlayer($db, $userId, $name, $roomId, $now);
     return $roomId;
@@ -389,6 +430,12 @@ function flyJoinRoom(PDO $db, int $userId, string $name, int $roomId, int $now):
     if ($curRoom !== false && (int) $curRoom === $roomId) {
         $db->prepare('UPDATE players SET name = ?, seen_at = ? WHERE user_id = ?')->execute([$name, $now, $userId]);
         return ['ok' => true, 'room_id' => $roomId];
+    }
+
+    // В парную гонку нельзя войти после старта — это ломает честный заезд.
+    $params = json_decode((string) $room['params'], true);
+    if (!empty($params['pair']) && (int) $room['started'] === 1) {
+        return ['ok' => false, 'error' => 'Гонка уже идёт', 'code' => 409];
     }
 
     $cnt = $db->prepare('SELECT COUNT(*) FROM players WHERE room_id = ?');

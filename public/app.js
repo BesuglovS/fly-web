@@ -578,16 +578,16 @@ const GP_KEY = 'pioneer-web-fly-gamepad';
 
 // Смысловые каналы: какую ось Джойстика во что превращаем.
 const GP_CHANNELS = [
-  { id:'yaw',      label:'Рыскание',  group:'left',  def: 0,     invert:false },
-  { id:'throttle', label:'Газ',       group:'left',  def: 1,     invert:true  },
-  { id:'pitch',    label:'Тангаж',    group:'right', def: 3,     invert:true  },
-  { id:'roll',     label:'Крен',      group:'right', def: 2,     invert:false },
+  { id:'yaw',      label:'Рыскание',  group:'left',  def: 3,     invert:false },
+  { id:'throttle', label:'Газ',       group:'left',  def: 2,     invert:false },
+  { id:'pitch',    label:'Тангаж',    group:'right', def: 1,     invert:false },
+  { id:'roll',     label:'Крен',      group:'right', def: 0,     invert:false },
 ];
 
 const DEFAULT_GP = {
   enabled: true,
-  axes: { yaw:0, throttle:1, pitch:3, roll:2 },
-  invert: { yaw:false, throttle:true, pitch:true, roll:false },
+  axes: { yaw:3, throttle:2, pitch:1, roll:0 },
+  invert: { yaw:false, throttle:false, pitch:false, roll:false },
   deadzone: 0.06,
   throttleMode: 'centered',   // 'centered' — самовозвратный стик (Mode 2), 'full' — от края до края
   armButton: -1,              // кнопка «взвести» (значение индекса Gamepad API), -1 = без кнопки

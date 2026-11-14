@@ -9,10 +9,14 @@
 </head>
 <body class="station-page">
   <main class="station-card">
-    <div class="station-kicker">СОРЕВНОВАНИЕ КЛАССА</div>
+    <div class="station-kicker">СОРЕВНОВАНИЕ</div>
     <h1>Настройка компьютера</h1>
-    <p>Выберите метку этого компьютера в кабинете R114. Она сохранится в браузере — ученику больше не нужно ничего вводить.</p>
-    <div class="station-grid" id="stationGrid"></div>
+    <p>Выберите метку этого компьютера из аудиторий 109, 110 или 114. Она сохранится в браузере — ученику больше не нужно ничего вводить.</p>
+    <div id="stationGrid"></div>
+    <div class="station-custom">
+      <input id="stationCustom" placeholder="Другая метка: R109-21" autocomplete="off">
+      <button type="button" id="stationUseCustom">Использовать</button>
+    </div>
     <p class="station-current">Текущая метка: <b id="stationCurrent">не выбрана</b></p>
     <div class="station-actions">
       <button type="button" id="stationOpen" class="primary" disabled>Открыть симулятор</button>

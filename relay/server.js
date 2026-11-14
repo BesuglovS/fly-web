@@ -16,16 +16,16 @@
  *                   | join{roomId} | quick | control{map,mode,started,max,title,race?}
  *                   | comp_create{title,classId,className,track,adminName,students[],stations[]}
  *                   | comp_sync | comp_start | comp_finish | comp_next
- *                   | comp_set_track{track} | comp_close | st{p,q} | leave
+ *                   | comp_set_track{track} | comp_set_stations{stations[]} | comp_close | st{p,q} | leave
  *   релей → клиент: lobby{rooms,maps,races,maxOptions,maxHard,self}
  *                   | welcome{self,room,participants,maps,races,maxOptions,maxHard,isAdmin}
  *                   | room{room,participants} | st{id,p,q}
  *                   | comp{comp,self} (состояние турнира; comp=null — турнира нет)
  *                   | error{message,code?} | ready/go/reset/race
  *
- * Соревнование класса (competition) — отдельный режим комнаты-наблюдателя:
+ * Соревнование (competition) — отдельный режим комнаты-наблюдателя:
  *   - админ создаёт турнир, сервер строит сетку заездов (до 6 гонщиков в заезде);
- *   - ученики подключаются по метке компьютера (?station=R114-01) без логина;
+ *   - ученики подключаются по метке компьютера (?station=R109-01) без логина;
  *   - перед заездом сервер назначает ученика на подключённый компьютер;
  *   - старт/завершение/следующий заезд — только с экрана администратора.
  */
@@ -56,6 +56,12 @@ const PING_MS = 30000;
 
 /* Компьютеры класса R114: метка передаётся в ?station=... (без логина ученика). */
 const STATIONS = ['R114-01', 'R114-02', 'R114-03', 'R114-17', 'R114-18', 'R114-19'];
+const STATION_ROOMS = ['109', '110', '114'];
+function stationSortKey(id) {
+  const m = /^R(109|110|114)-(\d{1,2})$/.exec(String(id || ''));
+  if (!m) return 99999;
+  return STATION_ROOMS.indexOf(m[1]) * 1000 + Number(m[2]);
+}
 const COMP_MAX = 6;                 // одновременно в заезде
 const COMP_STUDENTS_MAX = 64;       // предохранитель для класса
 const COMP_COUNTDOWN_MS = 5000;     // общий отсчёт до старта
@@ -124,7 +130,7 @@ let userSeq = 0;
 let roomSeq = 0;
 const clients = new Map(); // ws -> client
 const rooms = new Map();   // roomId -> room
-let comp = null;           // активное соревнование класса (одно на релей)
+let comp = null;           // активное соревнование (одно на релей)
 let compHeatSeq = 0;
 
 function sanitizeName(v, max = NAME_MAX) {
@@ -135,7 +141,11 @@ function sanitizeMode(v) { return MODES.includes(v) ? v : 'angle'; }
 function sanitizeRace(v) { return RACES.includes(v) ? v : ''; }
 function sanitizeStation(v) {
   const s = String(v == null ? '' : v).trim().toUpperCase();
-  return STATIONS.includes(s) ? s : '';
+  const m = /^R(109|110|114)-(\d{1,2})$/.exec(s);
+  if (!m) return '';
+  const num = Number(m[2]);
+  if (!Number.isFinite(num) || num < 1 || num > 99) return '';
+  return 'R' + m[1] + '-' + String(num).padStart(2, '0');
 }
 function allowedOptions(isAdmin) { return isAdmin ? MAX_OPTIONS : MAX_OPTIONS.filter((n) => n <= PUBLIC_MAX); }
 function sanitizeMax(v, isAdmin) {
@@ -146,7 +156,7 @@ function sanitizeMax(v, isAdmin) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   СОРЕВНОВАНИЕ КЛАССА
+   СОРЕВНОВАНИЕ
    Сервер строит турнирную сетку, назначает учеников на подключённые
    компьютеры и ведёт заезды (не более COMP_MAX гонщиков одновременно).
    ═══════════════════════════════════════════════════════════════════ */
@@ -356,7 +366,7 @@ function compRestoreState() {
     const id = sanitizeStation(raw);
     if (id && stationIds.indexOf(id) < 0) stationIds.push(id);
   }
-  stationIds.sort((a, b) => STATIONS.indexOf(a) - STATIONS.indexOf(b));
+  stationIds.sort((a, b) => stationSortKey(a) - stationSortKey(b));
   if (!stationIds.length) stationIds.push(...STATIONS);
   let heatSize = Number(saved.heatSize) || Math.min(COMP_MAX, stationIds.length, students.length);
   heatSize = Math.max(1, Math.min(COMP_MAX, stationIds.length, students.length, heatSize));
@@ -1071,7 +1081,6 @@ function compCreate(adminClient, msg) {
     });
     return;
   }
-  if (comp) compClose('Соревнование заменено новым', adminClient.id);
 
   const raw = Array.isArray(msg.students) ? msg.students : [];
   const seen = new Set();
@@ -1097,12 +1106,20 @@ function compCreate(adminClient, msg) {
     const id = sanitizeStation(rawStation);
     if (id && stationIds.indexOf(id) < 0) stationIds.push(id);
   }
-  stationIds.sort((a, b) => STATIONS.indexOf(a) - STATIONS.indexOf(b));
+  stationIds.sort((a, b) => stationSortKey(a) - stationSortKey(b));
   if (!stationIds.length) {
     send(adminClient.ws, {
       t: 'error',
       code: 'comp_bad_stations',
       message: 'Выберите хотя бы один компьютер для соревнования',
+    });
+    return;
+  }
+  if (stationIds.length > COMP_MAX) {
+    send(adminClient.ws, {
+      t: 'error',
+      code: 'comp_bad_stations',
+      message: 'Можно выбрать не более ' + COMP_MAX + ' компьютеров',
     });
     return;
   }
@@ -1120,6 +1137,7 @@ function compCreate(adminClient, msg) {
   const title = sanitizeName(msg.title, 60) || ('Соревнование · ' + className);
   const classId = sanitizeName(msg.classId, 40);
 
+  if (comp) compClose('Соревнование заменено новым', adminClient.id);
   comp = {
     id: Date.now(),
     title,
@@ -1288,7 +1306,8 @@ function compFinalizeHeat(heat, reason) {
   const round = comp.rounds.find((r) => r.heats.includes(heat));
   const nextRound = round ? comp.rounds[round.index] : null;
   if (nextRound) {
-    const q = Math.max(1, Math.floor(COMP_MAX / round.heats.length));
+    const cap = Math.max(1, Math.min(COMP_MAX, Number(comp.heatSize) || COMP_MAX));
+    const q = Math.max(1, Math.floor(cap / round.heats.length));
     heat.qualifiers = rows.filter((r) => !r.failed && r.place <= q).map((r) => r.sid);
   } else {
     heat.qualifiers = rows.map((r) => r.sid);
@@ -1343,6 +1362,67 @@ function compSetTrack(adminClient, track) {
     room.params.race = r;
     pushRoom(room);
   }
+  compBroadcast();
+}
+/* Сменить набор компьютеров между заездами (prep / heat_done). */
+function compSetStations(adminClient, rawStations) {
+  if (!comp) return;
+  if (!adminClient.isAdmin || adminClient.id !== comp.adminId) return;
+  if (comp.phase !== 'prep' && comp.phase !== 'heat_done') {
+    send(adminClient.ws, {
+      t: 'error',
+      message: 'Менять компьютеры можно только между заездами',
+    });
+    return;
+  }
+  const ids = [];
+  for (const raw of (Array.isArray(rawStations) ? rawStations : [])) {
+    const id = sanitizeStation(raw);
+    if (id && ids.indexOf(id) < 0) ids.push(id);
+  }
+  ids.sort((a, b) => stationSortKey(a) - stationSortKey(b));
+  if (!ids.length) {
+    send(adminClient.ws, { t: 'error', message: 'Выберите хотя бы один компьютер' });
+    return;
+  }
+  if (ids.length > COMP_MAX) {
+    send(adminClient.ws, { t: 'error', message: 'Можно выбрать не более ' + COMP_MAX + ' компьютеров' });
+    return;
+  }
+  const pending = compAllHeats().filter((h) => h.status === 'pending' && h.participants.length);
+  const need = pending.reduce((max, h) => Math.max(max, h.participants.length), 0);
+  if (ids.length < need) {
+    send(adminClient.ws, {
+      t: 'error',
+      message: 'Для заезда нужно минимум ' + need + ' компьютеров',
+    });
+    return;
+  }
+
+  const room = rooms.get(comp.roomId);
+  if (room) {
+    for (const c of [...room.members.values()]) {
+      if (c.id === room.hostId) continue;
+      if (c.station && ids.indexOf(c.station) < 0) {
+        room.members.delete(c.id);
+        c.roomId = 0;
+        c.slot = -1;
+        c.compHeatId = 0;
+        c.compSid = 0;
+        send(c.ws, {
+          t: 'error',
+          code: 'comp_station_inactive',
+          message: 'Компьютер больше не задействован в соревновании',
+        });
+      }
+    }
+  }
+  comp.stationIds = ids;
+  compSaveState();
+  for (const c of clients.values()) {
+    if (c.station && ids.indexOf(c.station) >= 0) compTryJoin(c, true);
+  }
+  if (room) pushRoom(room);
   compBroadcast();
 }
 function compHandleRace(client, msg) {
@@ -1778,7 +1858,7 @@ wss.on('connection', (ws) => {
         break;
       }
 
-      /* ── соревнование класса ── */
+      /* ── соревнование ── */
       case 'comp_sync':
         compSendState(client);
         break;
@@ -1806,6 +1886,10 @@ wss.on('connection', (ws) => {
 
       case 'comp_set_track':
         compSetTrack(client, msg.track);
+        break;
+
+      case 'comp_set_stations':
+        compSetStations(client, msg.stations);
         break;
 
       case 'comp_close':

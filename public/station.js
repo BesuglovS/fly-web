@@ -1,50 +1,93 @@
 'use strict';
 
 (function () {
-  const STATIONS = ['R114-01', 'R114-02', 'R114-03', 'R114-17', 'R114-18', 'R114-19'];
+  const ROOMS = ['109', '110', '114'];
+  const MAX_NUMBER = 20;
   const KEY = 'fly-lan-station';
   const grid = document.getElementById('stationGrid');
   const currentEl = document.getElementById('stationCurrent');
   const openBtn = document.getElementById('stationOpen');
+  const customInput = document.getElementById('stationCustom');
+  const customBtn = document.getElementById('stationUseCustom');
   let selected = '';
 
+  function normalizeStation(id) {
+    const m = /^R(109|110|114)-(\d{1,2})$/i.exec(String(id == null ? '' : id).trim());
+    if (!m) return '';
+    const n = Number(m[2]);
+    if (!Number.isFinite(n) || n < 1 || n > 99) return '';
+    return 'R' + m[1] + '-' + String(n).padStart(2, '0');
+  }
+
   function readSaved() {
-    const q = new URLSearchParams(location.search).get('station') || '';
-    if (STATIONS.indexOf(q) >= 0) return q;
+    const q = normalizeStation(new URLSearchParams(location.search).get('station') || '');
+    if (q) return q;
     try {
-      const s = localStorage.getItem(KEY) || '';
-      return STATIONS.indexOf(s) >= 0 ? s : '';
+      return normalizeStation(localStorage.getItem(KEY) || '');
     } catch (_) {
       return '';
     }
   }
 
-  function render() {
-    currentEl.textContent = selected || 'не выбрана';
-    openBtn.disabled = !selected || location.protocol === 'https:';
-    grid.querySelectorAll('button[data-station]').forEach(function (b) {
-      b.classList.toggle('sel', b.dataset.station === selected);
-    });
-  }
-
   function select(station) {
-    selected = STATIONS.indexOf(station) >= 0 ? station : '';
+    selected = normalizeStation(station);
     if (selected) {
       try { localStorage.setItem(KEY, selected); } catch (_) {}
     } else {
       try { localStorage.removeItem(KEY); } catch (_) {}
     }
+    if (customInput) customInput.value = '';
     render();
   }
 
-  STATIONS.forEach(function (st) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.dataset.station = st;
-    b.textContent = st;
-    b.addEventListener('click', function () { select(st); });
-    grid.appendChild(b);
+  function render() {
+    currentEl.textContent = selected || 'не выбрана';
+    openBtn.disabled = !selected || location.protocol === 'https:';
+    document.querySelectorAll('button[data-station]').forEach(function (b) {
+      b.classList.toggle('sel', normalizeStation(b.dataset.station) === selected);
+    });
+  }
+
+  ROOMS.forEach(function (room) {
+    const block = document.createElement('div');
+    block.className = 'station-room';
+    const title = document.createElement('div');
+    title.className = 'station-room-title';
+    title.textContent = 'Аудитория ' + room;
+    const roomGrid = document.createElement('div');
+    roomGrid.className = 'station-grid';
+    for (let n = 1; n <= MAX_NUMBER; n++) {
+      const id = 'R' + room + '-' + String(n).padStart(2, '0');
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.dataset.station = id;
+      b.textContent = String(n).padStart(2, '0');
+      b.addEventListener('click', function () { select(id); });
+      roomGrid.appendChild(b);
+    }
+    block.appendChild(title);
+    block.appendChild(roomGrid);
+    grid.appendChild(block);
   });
+
+  function useCustom() {
+    const id = normalizeStation(customInput ? customInput.value : '');
+    if (!id) {
+      if (customInput) {
+        customInput.focus();
+        customInput.classList.add('bad');
+        setTimeout(function () { customInput.classList.remove('bad'); }, 1200);
+      }
+      return;
+    }
+    select(id);
+  }
+  if (customBtn) customBtn.addEventListener('click', useCustom);
+  if (customInput) {
+    customInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); useCustom(); }
+    });
+  }
 
   openBtn.addEventListener('click', function () {
     if (!selected) return;

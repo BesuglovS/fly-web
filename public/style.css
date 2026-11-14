@@ -290,6 +290,7 @@
   #netModal .gp-card{background:rgba(12,19,28,.98);border:1px solid rgba(255,255,255,.16);
     border-radius:16px;padding:20px 22px;width:min(560px,94vw);max-height:90vh;overflow:auto;
     box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  #netModal.comp-setup .gp-card{width:min(840px,96vw)}
   #netModal h2{margin:0 0 6px;font-size:20px;color:#9fd0ff}
   .net-row{justify-content:flex-start;margin:12px 0}
   .net-row button{background:rgba(159,208,255,.18);border:1px solid rgba(159,208,255,.55);
@@ -543,4 +544,229 @@
   .collapsed > .panel-body{display:none}
   @media (pointer: coarse){
     .panel-toggle,.panel-title{display:none}
+  }
+
+  /* ============================================================
+     СОРЕВНОВАНИЕ КЛАССА (доска администратора, ПК ученика, настройка)
+     ============================================================ */
+  body.comp-station #legend,
+  body.comp-station #help,
+  body.comp-station #rotateHint{display:none !important}
+  body.comp-station #hud{top:58px}
+  body.comp-station #levelbar{top:58px}
+
+  /* --- доска администратора: компактное положение справа --- */
+  #compAdmin{display:none;position:fixed;top:64px;right:12px;z-index:9;width:300px;
+    max-height:46vh;overflow:auto;background:rgba(6,12,20,.88);
+    border:1px solid rgba(159,208,255,.4);border-radius:10px;padding:9px 11px;
+    color:#eaf6ff;font-size:11.5px;line-height:1.35;pointer-events:auto;
+    box-shadow:0 12px 34px rgba(0,0,0,.45)}
+  body.comp-admin #compAdmin{display:block}
+  #compAdmin .cp-live-title{display:flex;flex-direction:column;gap:1px;margin-bottom:5px}
+  #compAdmin .cp-live-title span{font-size:9px;letter-spacing:.5px;color:#9fd0ff;font-weight:700}
+  #compAdmin .cp-live-title b{color:#ffe066;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #compAdmin .cp-live-sub{color:#b9cde4;font-size:10.5px;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #compAdmin .cp-live-rows{border-top:1px solid rgba(159,208,255,.18);padding-top:5px}
+  #compAdmin .cp-live-row{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:5px;
+    align-items:center;padding:2px 0;border-bottom:1px solid rgba(159,208,255,.07)}
+  #compAdmin .cp-live-row:last-child{border-bottom:0}
+  #compAdmin .cp-live-row b{color:#9fd0ff;text-align:right;font-variant-numeric:tabular-nums}
+  #compAdmin .cp-live-row span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #compAdmin .cp-live-row em{font-style:normal;color:#8fb8e0;font-size:10px;white-space:nowrap}
+  #compAdmin .cp-live-row.final b{color:#ffe066}
+  #compAdmin .cp-live-row.active span{color:#d8ffe4}
+  #compAdmin .cp-live-actions{display:flex;gap:6px;margin-top:7px;flex-wrap:wrap}
+  #compAdmin button{background:rgba(159,208,255,.14);border:1px solid rgba(159,208,255,.45);
+    color:#eaf6ff;border-radius:6px;padding:4px 8px;font-size:10.5px;font-weight:600;cursor:pointer}
+  #compAdmin button:hover{background:rgba(159,208,255,.28)}
+  #compAdmin .cp-muted{color:#8fa6bd;font-size:10.5px;margin:4px 0}
+  #compAdmin .cp-note{margin-top:6px;padding:6px 8px;border-radius:7px;font-size:10.5px;line-height:1.4}
+  #compAdmin .cp-note.err{background:rgba(255,92,77,.14);border:1px solid rgba(255,92,77,.5);color:#ffd8d4}
+  #compAdmin .cp-note.ok{background:rgba(57,211,83,.14);border:1px solid rgba(57,211,83,.5);color:#d8ffe4}
+
+  /* --- большая доска/подготовка заезда --- */
+  #compPrep{position:fixed;inset:0;z-index:42;display:none;align-items:center;justify-content:center;
+    padding:16px;background:rgba(3,7,12,.72);backdrop-filter:blur(4px);overflow:auto;pointer-events:auto}
+  #compPrep.show{display:flex}
+  #compPrep .cp-card{width:min(940px,96vw);max-height:calc(100vh - 32px);overflow:auto;
+    background:rgba(10,17,26,.98);border:1px solid rgba(159,208,255,.42);border-radius:16px;
+    padding:18px 22px;box-shadow:0 24px 80px rgba(0,0,0,.65);color:#eaf6ff}
+  #compPrep h2{margin:0 0 3px;color:#eaf6ff;font-size:22px}
+  #compPrep h3{margin:14px 0 7px;color:#9fd0ff;font-size:14px}
+  #compPrep .cp-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}
+  #compPrep .cp-sub{color:#9fb6d0;font-size:12px;margin-top:2px}
+  #compPrep .cp-x{background:transparent;border:0;color:#9fb6d0;font-size:20px;line-height:1;cursor:pointer;padding:0 4px}
+  #compPrep .cp-x:hover{color:#fff}
+  #compPrep .cp-kicker{font-size:10px;letter-spacing:.7px;color:#9fd0ff;font-weight:700;margin-bottom:3px}
+  #compPrep .cp-section{margin-top:12px}
+  #compPrep .cp-note{margin:10px 0;padding:8px 10px;border-radius:8px;font-size:12px}
+  #compPrep .cp-note.err{background:rgba(255,92,77,.14);border:1px solid rgba(255,92,77,.5);color:#ffd8d4}
+  #compPrep .cp-note.ok{background:rgba(57,211,83,.14);border:1px solid rgba(57,211,83,.5);color:#d8ffe4}
+  #compPrep .cp-muted{color:#8fa6bd;font-size:11.5px;line-height:1.45;margin:6px 0}
+  #compPrep .cp-warn{color:#ffd23f;font-size:12px;line-height:1.45;margin:7px 0}
+  #compPrep .cp-hint{color:#8fb8e0;font-size:11px;line-height:1.45;margin:8px 0 0}
+  #compPrep .cp-assign{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-top:8px}
+  #compPrep .cp-assign-row{display:grid;grid-template-columns:78px 96px minmax(0,1fr);gap:7px;align-items:center;
+    background:rgba(255,255,255,.035);border:1px solid rgba(159,208,255,.16);border-radius:8px;padding:7px 9px}
+  #compPrep .cp-assign-row.filled{border-color:rgba(57,211,83,.42);background:rgba(57,211,83,.07)}
+  #compPrep .cp-assign-row b{color:#ffe066;font-size:12px}
+  #compPrep .cp-pc{font-size:10.5px;white-space:nowrap}
+  #compPrep .cp-pc.on{color:#39d353}
+  #compPrep .cp-pc.off{color:#ff7a6e}
+  #compPrep .cp-who{color:#eaf6ff;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #compPrep .cp-participants{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:10px;font-size:12px;color:#b9cde4}
+  #compPrep .cp-pill{display:inline-block;background:rgba(159,208,255,.12);border:1px solid rgba(159,208,255,.3);
+    border-radius:999px;padding:3px 8px;color:#dcebff;font-size:11px;font-weight:600}
+  #compPrep .cp-track{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:12px;font-size:12px;color:#b9cde4}
+  #compPrep select,#compPrep input{background:#0e1622;color:#eaf6ff;border:1px solid rgba(159,208,255,.4);
+    border-radius:7px;padding:5px 7px;font-size:12px;min-width:150px}
+  #compPrep .cp-foot{display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin-top:15px}
+  #compPrep .cp-foot button,#compPrep .cp-linkbtn,.cp-setup .cp-foot button,.cp-setup .cp-linkbtn{
+    background:rgba(159,208,255,.16);border:1px solid rgba(159,208,255,.55);color:#eaf6ff;
+    border-radius:8px;padding:7px 13px;font-size:12px;font-weight:600;cursor:pointer;text-decoration:none}
+  #compPrep .cp-foot button:hover,#compPrep .cp-linkbtn:hover,.cp-setup .cp-foot button:hover,.cp-setup .cp-linkbtn:hover{background:rgba(159,208,255,.3)}
+  #compPrep .cp-primary,.cp-setup .cp-primary{background:#2f8fff;border-color:#2f8fff;color:#fff}
+  #compPrep .cp-primary:hover,.cp-setup .cp-primary:hover{background:#4aa0ff}
+  #compPrep button:disabled{opacity:.45;cursor:default}
+  #compPrep .cp-danger,.cp-setup .cp-danger{background:rgba(255,92,77,.16);border-color:rgba(255,92,77,.55);color:#ffd8d4}
+  #compPrep .cp-danger:hover,.cp-setup .cp-danger:hover{background:rgba(255,92,77,.3)}
+  #compPrep .cp-results{margin-top:7px}
+  #compPrep .cp-res-row{display:grid;grid-template-columns:30px minmax(0,1fr) 90px;gap:8px;align-items:center;
+    padding:4px 7px;border-radius:7px;font-size:12px}
+  #compPrep .cp-res-row:nth-child(odd){background:rgba(255,255,255,.04)}
+  #compPrep .cp-res-row b{color:#9fd0ff;text-align:right}
+  #compPrep .cp-res-row em{font-style:normal;color:#cfe0f5;text-align:right;font-variant-numeric:tabular-nums}
+  #compPrep .cp-res-row.fail{color:#ffb3ab}
+  #compPrep .cp-stand{margin-top:7px}
+  #compPrep .cp-stand-row{display:grid;grid-template-columns:30px minmax(0,1fr) auto;gap:8px;align-items:center;
+    padding:3px 7px;border-radius:6px;font-size:12px}
+  #compPrep .cp-stand-row:nth-child(odd){background:rgba(255,255,255,.035)}
+  #compPrep .cp-stand-row b{color:#9fd0ff;text-align:right}
+  #compPrep .cp-stand-row em{font-style:normal;color:#8fb8e0;font-size:10.5px}
+  #compPrep .cp-stand-row.final b{color:#ffe066}
+  #compPrep .cp-stand-row.active span{color:#d8ffe4;font-weight:600}
+  #compPrep .cp-details{margin-top:14px;border-top:1px solid rgba(159,208,255,.16);padding-top:10px}
+  #compPrep .cp-details summary{cursor:pointer;color:#9fd0ff;font-size:12px;font-weight:700}
+  #compPrep .cp-round{margin-top:10px}
+  #compPrep .cp-round h4{margin:0 0 6px;color:#cfe0f5;font-size:11px;letter-spacing:.4px}
+  #compPrep .cp-heats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:7px}
+  #compPrep .cp-heat{background:rgba(255,255,255,.03);border:1px solid rgba(159,208,255,.16);
+    border-radius:9px;padding:7px 9px}
+  #compPrep .cp-heat.active{border-color:rgba(255,224,102,.6);background:rgba(255,224,102,.06)}
+  #compPrep .cp-heat.done{border-color:rgba(57,211,83,.35)}
+  #compPrep .cp-heat-h{display:flex;justify-content:space-between;gap:6px;align-items:center;margin-bottom:5px}
+  #compPrep .cp-heat-h b{color:#dcebff;font-size:11.5px}
+  #compPrep .cp-heat-h span{color:#8fb8e0;font-size:9.5px;white-space:nowrap}
+  #compPrep .cp-bp{display:flex;justify-content:space-between;gap:7px;align-items:center;
+    padding:2px 0;font-size:11px;color:#cfe0f5;border-bottom:1px solid rgba(159,208,255,.07)}
+  #compPrep .cp-bp:last-child{border-bottom:0}
+  #compPrep .cp-bp span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #compPrep .cp-bp em{font-style:normal;color:#8fb8e0;font-size:10px;white-space:nowrap}
+  #compPrep .cp-bp.qual span{color:#d8ffe4;font-weight:600}
+  #compPrep .cp-bp.out span{color:#8a9bb0}
+  #compPrep .cp-bp.src span{color:#8fa6bd;font-style:italic}
+  #compPrep .cp-links{display:flex;flex-direction:column;gap:4px;margin-top:7px;font-size:11px}
+  #compPrep .cp-links div{display:flex;gap:7px;align-items:baseline;flex-wrap:wrap}
+  #compPrep .cp-links b{color:#ffe066;min-width:58px}
+  #compPrep .cp-links code{color:#cfe0f5;word-break:break-all}
+
+  /* --- экран ученика --- */
+  #compStation{position:fixed;inset:0;z-index:46;display:none;align-items:center;justify-content:center;
+    padding:18px;background:radial-gradient(ellipse at 50% 30%,#13283d 0%,#070c12 70%);color:#eaf6ff;text-align:center}
+  #compStation.show{display:flex}
+  #compStation .cs-wait-in{max-width:min(760px,94vw)}
+  #compStation .cs-kicker{font-size:11px;letter-spacing:1.2px;color:#9fd0ff;font-weight:700;margin-bottom:12px}
+  #compStation .cs-name{font-size:clamp(28px,6vw,64px);font-weight:800;color:#fff;line-height:1.08;margin-bottom:8px}
+  #compStation .cs-pc{font-size:16px;color:#cfe0f5;margin-bottom:14px}
+  #compStation .cs-pc b{color:#ffe066}
+  #compStation .cs-state{font-size:clamp(15px,2.4vw,22px);line-height:1.45;color:#dcebff;margin:8px 0}
+  #compStation .cs-state.err{color:#ffb3ab}
+  #compStation .cs-hint{font-size:13px;line-height:1.5;color:#8fa6bd;margin-top:12px}
+  #compStation .cs-place{font-size:clamp(60px,14vw,150px);line-height:1;font-weight:900;color:#ffe066;margin:14px 0 4px;
+    text-shadow:0 4px 30px rgba(255,224,102,.25)}
+  #compLive{display:none;position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:11;
+    align-items:center;gap:14px;padding:7px 14px;border-radius:10px;background:rgba(6,12,20,.84);
+    border:1px solid rgba(57,211,83,.5);color:#eaf6ff;font-size:12px;white-space:nowrap;pointer-events:none;
+    max-width:96vw;overflow:hidden}
+  #compLive.show{display:flex}
+  #compLive .cl-name{font-weight:700;color:#d8ffe4}
+  #compLive .cl-pc{color:#ffe066;font-weight:700}
+  #compLive .cl-heat,#compLive .cl-track{color:#9fd0ff}
+
+  /* --- настройка соревнования на сайте --- */
+  .cp-setup{display:flex;flex-direction:column;gap:10px}
+  .cp-setup-head .cp-kicker{font-size:10px;letter-spacing:.7px;color:#9fd0ff;font-weight:700;margin-bottom:3px}
+  .cp-setup .cp-field{display:flex;flex-direction:column;gap:4px;font-size:11.5px;color:#9fd0ff;font-weight:600}
+  .cp-setup .cp-field input,.cp-setup .cp-field select{background:#0e1622;color:#eaf6ff;
+    border:1px solid rgba(159,208,255,.4);border-radius:7px;padding:6px 8px;font-size:12px;font-weight:400}
+  .cp-setup-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .cp-present-head{display:flex;justify-content:space-between;gap:10px;align-items:center;font-size:12px;color:#cfe0f5}
+  .cp-students{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:4px 10px;
+    max-height:210px;overflow:auto;padding:7px;border:1px solid rgba(159,208,255,.2);border-radius:8px;background:rgba(255,255,255,.025)}
+  .cp-student{display:flex;gap:7px;align-items:center;font-size:12px;color:#dcebff;cursor:pointer;padding:2px 3px;border-radius:5px}
+  .cp-student:hover{background:rgba(159,208,255,.08)}
+  .cp-student input{accent-color:#2f8fff}
+  .cp-instructions{margin-top:6px;padding:11px 13px;border:1px solid rgba(159,208,255,.22);border-radius:10px;
+    background:rgba(159,208,255,.04);font-size:12px;color:#cfe0f5;line-height:1.5}
+  .cp-instructions h3{margin:0 0 6px;color:#9fd0ff;font-size:13px}
+  .cp-instructions ol{margin:0;padding-left:19px}
+  .cp-instructions li{margin:5px 0}
+  .cp-pre{background:#0a1018;border:1px solid rgba(159,208,255,.22);border-radius:7px;padding:8px 10px;
+    margin:6px 0;color:#d8ffe4;font-size:11.5px;line-height:1.5;white-space:pre-wrap;user-select:text}
+  .cp-setup .cp-links{display:flex;flex-direction:column;gap:3px;margin-top:7px;font-size:11px}
+  .cp-setup .cp-links div{display:flex;gap:7px;align-items:baseline;flex-wrap:wrap}
+  .cp-setup .cp-links b{color:#ffe066;min-width:58px}
+  .cp-setup .cp-links code{color:#cfe0f5;word-break:break-all;user-select:text}
+  .cp-setup .cp-muted{color:#8fa6bd;font-size:11.5px;line-height:1.45;margin:5px 0}
+  .cp-setup .cp-note{padding:8px 10px;border-radius:8px;font-size:12px}
+  .cp-setup .cp-note.err{background:rgba(255,92,77,.14);border:1px solid rgba(255,92,77,.5);color:#ffd8d4}
+  .cp-setup .cp-note.ok{background:rgba(57,211,83,.14);border:1px solid rgba(57,211,83,.5);color:#d8ffe4}
+  .cp-setup .cp-warn{color:#ffd23f;font-size:12px}
+  .cp-setup .cp-hint{color:#8fb8e0;font-size:11px;line-height:1.45;margin:6px 0}
+  .cp-setup .cp-ok{color:#d8ffe4;font-size:12px}
+  .cp-setup .cp-ok a{color:#9fd0ff}
+  .cp-setup .cp-foot{display:flex;gap:9px;flex-wrap:wrap;margin-top:6px}
+  .cp-setup .net-mini{padding:4px 8px}
+  .net-row button.net-comp{background:rgba(255,224,102,.14);border-color:rgba(255,224,102,.55);color:#ffe9a8}
+  .net-row button.net-comp:hover:not(:disabled){background:rgba(255,224,102,.28)}
+
+  @media (max-width:760px){
+    #compAdmin{width:250px;font-size:10.5px}
+    #compPrep .cp-assign{grid-template-columns:1fr}
+    .cp-setup-grid{grid-template-columns:1fr}
+    #compPrep .cp-card{padding:14px}
+    #compStation .cs-name{font-size:30px}
+  }
+
+  /* --- страница настройки компьютера --- */
+  body.station-page{overflow:auto;display:flex;align-items:center;justify-content:center;
+    min-height:100vh;padding:24px;background:radial-gradient(ellipse at 50% 25%,#13283d 0%,#070c12 72%);
+    user-select:text;touch-action:auto}
+  .station-card{width:min(680px,94vw);padding:26px 30px;border-radius:18px;
+    background:rgba(10,17,26,.96);border:1px solid rgba(159,208,255,.4);
+    box-shadow:0 24px 80px rgba(0,0,0,.6);color:#eaf6ff}
+  .station-kicker{font-size:10px;letter-spacing:1px;color:#9fd0ff;font-weight:700;margin-bottom:5px}
+  .station-card h1{margin:0 0 8px;font-size:25px;color:#fff}
+  .station-card p{margin:7px 0;color:#cfe0f5;font-size:13px;line-height:1.55}
+  .station-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin:18px 0}
+  .station-grid button{padding:14px 10px;border-radius:10px;cursor:pointer;
+    background:rgba(159,208,255,.1);border:1px solid rgba(159,208,255,.38);
+    color:#dcebff;font-size:16px;font-weight:700;letter-spacing:.5px}
+  .station-grid button:hover{background:rgba(159,208,255,.22)}
+  .station-grid button.sel{background:rgba(57,211,83,.22);border-color:rgba(57,211,83,.75);color:#d8ffe4}
+  .station-current{font-size:14px}
+  .station-current b{color:#ffe066}
+  .station-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:18px 0 8px}
+  .station-actions button{padding:10px 18px;border-radius:9px;cursor:pointer;
+    background:rgba(159,208,255,.16);border:1px solid rgba(159,208,255,.55);
+    color:#eaf6ff;font-size:14px;font-weight:600}
+  .station-actions button.primary{background:#2f8fff;border-color:#2f8fff;color:#fff}
+  .station-actions button.primary:hover:not(:disabled){background:#4aa0ff}
+  .station-actions button:disabled{opacity:.4;cursor:default}
+  .station-link{color:#9fd0ff;font-size:13px}
+  .station-hint{color:#8fa6bd;font-size:12px;line-height:1.5;margin-top:12px}
+  .station-hint code{color:#cfe0f5}
+  @media (max-width:520px){
+    .station-grid{grid-template-columns:repeat(2,1fr)}
+    .station-card{padding:20px}
   }

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Компьютер соревнования — симулятор БПЛА</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="station-page">
+  <main class="station-card">
+    <div class="station-kicker">СОРЕВНОВАНИЕ КЛАССА</div>
+    <h1>Настройка компьютера</h1>
+    <p>Выберите метку этого компьютера в кабинете R114. Она сохранится в браузере — ученику больше не нужно ничего вводить.</p>
+    <div class="station-grid" id="stationGrid"></div>
+    <p class="station-current">Текущая метка: <b id="stationCurrent">не выбрана</b></p>
+    <div class="station-actions">
+      <button type="button" id="stationOpen" class="primary" disabled>Открыть симулятор</button>
+      <a href="/?lan" id="stationNoComp" class="station-link">Войти без метки</a>
+    </div>
+    <p class="station-hint">Если компьютер не участвует в соревновании, просто откройте <code>/?lan</code>. Учитель видит только подключённые компьютеры и сам назначает, кто за них садится.</p>
+  </main>
+  <script src="station.js"></script>
+</body>
+</html>

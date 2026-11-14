@@ -92,9 +92,16 @@ function renderAuth(){
 async function initAuth(){
   authUser = await checkAuth();
   renderAuth();
+  try{ if(netModalEl && netModalEl.classList.contains('show')) renderNetBody(); }catch(_){}
 }
 renderAuth();   // немедленно проставляем ссылки входа/название «Гость»
-initAuth();     // фоновая проверка сессии — не блокирует запуск симулятора
+if(location.protocol === 'http:'){
+  /* LAN-релей работает без auth-web: не дёргаем портал из http-контекста. */
+  authUnavailable = true;
+  renderAuth();
+} else {
+  initAuth();     // фоновая проверка сессии — не блокирует запуск симулятора
+}
 
 /* ============================================================
    Рендерер / сцена / камера
@@ -543,6 +550,8 @@ function syncStickVisuals(lx, ly, rx, ry){
 addEventListener('keydown', e=>{
   /* пока открыт стартовый экран — игровые клавиши не работают (кроме Esc) */
   if(stStep !== 0 && e.code !== 'Escape') return;
+  /* В соревновании уровни/модель/режим задаёт турнир, а не ученик. */
+  if(NET_AUTO_COMP && (e.code === 'KeyR' || e.code === 'KeyN' || e.code === 'KeyM' || e.code === 'KeyF' || /^Digit/.test(e.code))) return;
   keys[e.code] = true;
   if(e.code === 'KeyC') cycleCamera();
   if(e.code === 'KeyR') resetDrone();
@@ -991,8 +1000,10 @@ function gpServiceButtons(){
   const hit = i => pressed[i] && !gpPrevButtons[i];
   const b = gamepad.config;
   if(hit(b.btnCamera)) cycleCamera();
-  if(hit(b.btnReset))  resetDrone();
-  if(hit(b.btnNext))   nextLevel();
+  if(!NET_AUTO_COMP){
+    if(hit(b.btnReset))  resetDrone();
+    if(hit(b.btnNext))   nextLevel();
+  }
   gpPrevButtons = pressed;
 }
 
@@ -1626,6 +1637,53 @@ const NET_RELAY = NET_QS.has('lan') || NET_QS.has('relay') || location.protocol 
 const NET_ADMIN_KEY = NET_QS.get('admin') || '';
 const NET_AUTO_PAIR = NET_QS.has('pair') || NET_QS.get('join') === 'pair';
 const NET_AUTO_DIRECTOR = NET_QS.has('director') || NET_QS.get('join') === 'director';
+/* Компьютеры класса для соревнования (те же метки, что и на релее). */
+const COMP_STATIONS = ['R114-01', 'R114-02', 'R114-03', 'R114-17', 'R114-18', 'R114-19'];
+const COMP_STATION_KEY = 'fly-lan-station';
+/* Метка ПК: ?station=R114-01 либо сохранённая на этом компьютере. На сайте
+   (https) не используем, чтобы случайно не включить соревнование. */
+function compStationFromEnv(){
+  if(!NET_RELAY) return '';
+  /* На странице администратора метка ПК из localStorage не должна включать режим ученика. */
+  if(NET_QS.has('compadmin') || NET_QS.has('comp') || /(?:^#|&)comp=/.test(String(location.hash || ''))) return '';
+  const q = NET_QS.get('station') || '';
+  if(COMP_STATIONS.indexOf(q) >= 0){
+    try{ localStorage.setItem(COMP_STATION_KEY, q); }catch(_){}
+    return q;
+  }
+  try{ const s = localStorage.getItem(COMP_STATION_KEY) || ''; return COMP_STATIONS.indexOf(s) >= 0 ? s : ''; }catch(_){ return ''; }
+}
+const NET_STATION = compStationFromEnv();
+const COMP_ADMIN_PAGE = NET_QS.has('compadmin') || NET_QS.has('comp') || /(?:^#|&)comp=/.test(String(location.hash || ''));
+const NET_AUTO_COMP = !!(NET_STATION || COMP_ADMIN_PAGE);
+/* Пакет соревнования передаётся с сайта в hash ссылки (не уходит на сервер). */
+function b64UrlEncode(str){
+  const bytes = new TextEncoder().encode(String(str));
+  let bin = '';
+  for(const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+function b64UrlDecode(str){
+  let s = String(str).replace(/-/g, '+').replace(/_/g, '/');
+  while(s.length % 4) s += '=';
+  const bin = atob(s);
+  const bytes = new Uint8Array(bin.length);
+  for(let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+function parseCompPayload(){
+  const hash = String(location.hash || '').replace(/^#/, '');
+  if(!hash) return null;
+  for(const part of hash.split('&')){
+    const eq = part.indexOf('=');
+    if(eq < 0) continue;
+    if(part.slice(0, eq) !== 'comp') continue;
+    try{ return JSON.parse(b64UrlDecode(part.slice(eq + 1))); }catch(_){ return null; }
+  }
+  return null;
+}
+const COMP_PAYLOAD = parseCompPayload();
+let compCreateSent = false;
 const LAN_NAME_KEY = 'fly-lan-name';
 /* v2: старые сохранённые адреса (до появления 10.12.6.23) игнорируем,
    чтобы поле по умолчанию было заполнено актуальным адресом. */
@@ -1716,7 +1774,30 @@ function relayAutoPairTry(){
   relaySend({ t:'join', roomId: room.id });
   return true;
 }
-function relayHello(name){ relaySend({ t:'hello', name: name, admin: NET_ADMIN_KEY }); }
+function relayHello(name){ relaySend({ t:'hello', name: name, admin: NET_ADMIN_KEY, station: NET_STATION, compadmin: COMP_ADMIN_PAGE ? 1 : 0 }); }
+let compSyncSent = false;
+/* Автозапуск соревнования: админ создаёт турнир из пакета в hash, ученик
+   просит текущее состояние. Вызывается после hello (ключ администратора уже
+   проверен сервером). */
+function compMaybeAuto(){
+  if(!NET_AUTO_COMP || !relayHelloSeen) return;
+  if(COMP_PAYLOAD){
+    if(compCreateSent) return;
+    if(!netRoom.isAdmin){
+      compAdminNotice('Ключ администратора не принят. Проверьте ADMIN_KEY и ссылку.', false);
+      compCreateSent = true;
+      return;
+    }
+    compCreateSent = true;
+    relaySend(Object.assign({}, COMP_PAYLOAD, { t:'comp_create' }));
+    try{ history.replaceState(null, '', location.pathname + location.search); }catch(_){}
+    return;
+  }
+  if(!compSyncSent){
+    compSyncSent = true;
+    relaySend({ t:'comp_sync' });
+  }
+}
 function relayConnect(addr){
   const target = (addr === undefined || addr === null || String(addr).trim() === '')
     ? relayTarget : String(addr).trim();
@@ -1735,6 +1816,7 @@ function relayConnect(addr){
   relayReady = false;
   relayHelloSeen = false;
   relayAutoPairDone = false;
+  compSyncSent = false;
   relayTarget = target;
   relayUrl = url;
   try{ localStorage.setItem(LAN_RELAY_KEY, target); }catch(_){}
@@ -1765,6 +1847,8 @@ function relayConnect(addr){
       netRaceStop();
     }
     netSetStatus('○ Релей отключён', false);
+    if(COMP_ADMIN_PAGE) compAdminNotice('Релей отключён. Проверьте, что сервер запущен, и обновите страницу.', false);
+    else if(NET_STATION) compStationNotice('Релей отключён. Проверьте, что сервер запущен, и обновите страницу.', true);
     renderNetBody();
   });
   ws.addEventListener('error', ()=>{});
@@ -1779,7 +1863,8 @@ function relayOnMessage(data){
     if(m.self && m.self.name) netRoom.selfName = m.self.name;
     if(m.self) netRoom.isAdmin = !!m.self.isAdmin;
     relayHelloSeen = true;
-    relayAutoPairTry();
+    if(NET_AUTO_COMP) compMaybeAuto();
+    else relayAutoPairTry();
     return;
   }
   if(m.t === 'lobby'){
@@ -1787,11 +1872,13 @@ function relayOnMessage(data){
     if(m.self) netRoom.isAdmin = !!m.self.isAdmin;
     netRoom.lobbyRooms = m.rooms || [];
     syncNetMeta(m);
+    if(NET_AUTO_COMP){ compMaybeAuto(); return; }
     if(!netRoom.active){
       if(!relayAutoPairTry()) renderNetBody();
     }
     return;
   }
+  if(m.t === 'comp'){ compOnState(m); return; }
   if(m.t === 'welcome'){ relayEnter(m); return; }
   if(m.t === 'room'){ relayRoomUpdate(m); return; }
   if(m.t === 'st'){
@@ -1804,6 +1891,30 @@ function relayOnMessage(data){
   }
   if(m.t === 'ready' || m.t === 'go' || m.t === 'reset' || m.t === 'race'){ netRaceHandle(m.id, m); return; }
   if(m.t === 'error'){
+    if(m.code === 'comp_closed'){
+      compHandleClosed(m.message || 'Соревнование закрыто');
+      return;
+    }
+    if(m.code === 'comp_admin_replaced'){
+      stopNet(true);
+      compNotice = m.message || 'Доска открыта в другой вкладке';
+      compNoticeOk = false;
+      compAdminBoot();
+      return;
+    }
+    if(m.code === 'station_taken'){
+      compStationNotice('Этот компьютер уже открыт в другой вкладке. Закройте лишнюю вкладку.', true);
+      return;
+    }
+    if(m.code === 'comp_full'){
+      compStationNotice('Свободных мест в соревновании нет. Сообщите учителю.', true);
+      return;
+    }
+    if(/^comp_/.test(String(m.code || ''))){
+      netSetStatus('⚠ ' + (m.message || 'Ошибка соревнования'), false);
+      compAdminNotice(m.message || 'Ошибка соревнования', false);
+      return;
+    }
     if(m.code === 'room_closed'){
       const wasRace = netRace.active;
       stopNet();
@@ -1878,6 +1989,14 @@ const netRoom = {
   control: {},                 // неотправленное управление хоста: { map?, mode?, started? }
   peers: new Map(),            // userId -> peer
   info: null,                  // данные комнаты с сервера
+  comp: null,                  // текущее состояние соревнования класса
+  compId: 0,
+  compSelf: null,              // представление этого клиента в турнире
+  compActive: false,           // местный ученик едет в текущем заезде
+  compBlocked: false,          // ожидание/результат: физика остановлена
+  compToken: '',               // стартовый токен текущего заезда
+  compSeenPhase: '',
+  compLocalDone: false,        // ученик уже финишировал в текущем заезде
   lobbyRooms: [],
   maps: ['meadow', 'city', 'canyon', 'forest'],
   maxOptions: [2, 4, 6, 8],
@@ -1904,9 +2023,16 @@ function netIsDirector(){
   const p = netRoom.info && netRoom.info.params;
   return !!(p && p.director);
 }
+function netIsComp(){
+  const p = netRoom.info && netRoom.info.params;
+  return !!(p && p.competition);
+}
+function compIsAdminPage(){ return COMP_ADMIN_PAGE; }
+function compIsStationPage(){ return !!NET_STATION && !COMP_ADMIN_PAGE; }
 function netIsSpectate(){ return netIsPair() || netIsDirector(); }
 function netRacerLimit(){
   if(netIsPair()) return 2;
+  if(netIsComp()) return 6;
   if(netIsDirector()){
     const n = Number(netRoom.info && netRoom.info.params && netRoom.info.params.racersMax);
     return (n >= 2 && n <= 6) ? n : 6;
@@ -2018,12 +2144,300 @@ function netBindRelayLine(){
   });
 }
 
+let compSetupOpen = false;
+const compSetup = {
+  loading: false,
+  error: '',
+  groups: [],
+  users: [],
+  memberships: [],
+  groupId: '',
+  present: new Set(),
+  title: '',
+  track: 'utt1',
+  key: '',
+  relay: '',
+  launchUrl: '',
+  loaded: false,
+  notice: '',
+};
+function compGenKey(){
+  return 'fly-' + Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 6);
+}
+function compSetupInit(){
+  if(!compSetup.key){
+    try{ compSetup.key = localStorage.getItem('fly-comp-admin-key') || ''; }catch(_){}
+    if(!compSetup.key) compSetup.key = compGenKey();
+  }
+  if(!compSetup.relay) compSetup.relay = relayTarget || NET_RELAY_DEFAULT;
+}
+function compSetupStudents(){
+  if(!compSetup.groupId) return [];
+  const ids = new Set();
+  for(const m of compSetup.memberships){
+    if(String(m.group_id) === String(compSetup.groupId)) ids.add(Number(m.user_id));
+  }
+  return compSetup.users
+    .filter(u => ids.has(Number(u.id)))
+    .map(u => ({ id: Number(u.id), name: u.display_name || u.login || ('Ученик ' + u.id) }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+}
+function compSetupSelectGroup(groupId){
+  compSetup.groupId = String(groupId || '');
+  compSetup.present = new Set(compSetupStudents().map(s => s.id));
+  compSetup.notice = '';
+  const g = compSetup.groups.find(x => String(x.id) === String(groupId));
+  if(g && (!compSetup.title || compSetup.title.indexOf('Соревнование · ') === 0)) {
+    compSetup.title = 'Соревнование · ' + g.name;
+  }
+  renderCompSetup();
+}
+function compSetupGroupName(){
+  const g = compSetup.groups.find(x => String(x.id) === String(compSetup.groupId));
+  return g ? g.name : '';
+}
+function compSetupAdminUrl(payload){
+  let base;
+  try{ base = relayHttpUrlFromAddr(compSetup.relay); }catch(_){ base = 'http://' + compSetup.relay + '/?lan'; }
+  const u = new URL(base);
+  u.searchParams.set('admin', compSetup.key);
+  u.searchParams.set('compadmin', '1');
+  u.hash = 'comp=' + b64UrlEncode(JSON.stringify(payload));
+  return u.toString();
+}
+function compSetupStationUrls(){
+  let base;
+  try{ base = relayHttpUrlFromAddr(compSetup.relay); }catch(_){ base = 'http://' + compSetup.relay + '/?lan'; }
+  base = base.replace(/\/?\?lan$/, '');
+  return COMP_STATIONS.map(id => base + '/?lan&station=' + encodeURIComponent(id));
+}
+function compSetupInstructions(key, relay){
+  const urls = compSetupStationUrls();
+  return '<div class="cp-instructions">' +
+    '<h3>Как запустить релей</h3>' +
+    '<ol>' +
+      '<li>На машине-релее включите <b>Node.js 18+</b> и откройте PowerShell.</li>' +
+      '<li>Выполните команды (папка релея на этой машине):' +
+        '<pre class="cp-pre" id="cpKeyCmd">cd C:\\websites\\na\\fly-web\\relay\nnpm install\n$env:ADMIN_KEY="' + escapeHtml(key) + '"\nnpm start</pre>' +
+        '<span class="cp-muted">Linux/macOS: <code>ADMIN_KEY=' + escapeHtml(key) + ' npm start</code></span>' +
+      '</li>' +
+      '<li>Разрешите в брандмауэре порт <b>8080</b> (TCP).</li>' +
+      '<li>На каждом компьютере класса откройте свою ссылку из списка ниже.</li>' +
+      '<li>Вернитесь сюда и нажмите «Создать и открыть доску». Ученикам логин не нужен.</li>' +
+    '</ol>' +
+    '<p class="cp-muted">Адрес релея: <b>' + escapeHtml(relay || '—') + '</b>. Проверка: <code>http://' +
+      escapeHtml((relay || '').replace(/^https?:\/\//, '').replace(/\/.*$/, '') || 'IP:8080') + '/healthz</code> → ok.</p>' +
+    '<details class="cp-details" open><summary>Ссылки для компьютеров R114</summary>' +
+      '<div class="cp-links" id="cpStationLinks">' + urls.map((u, i) =>
+        '<div><b>' + COMP_STATIONS[i] + '</b> <code>' + escapeHtml(u) + '</code></div>').join('') + '</div>' +
+      '<p class="cp-hint">Можно один раз открыть на каждом ПК <code>http://' +
+        escapeHtml((relay || '').replace(/^https?:\/\//, '').replace(/\/.*$/, '') || 'IP:8080') +
+        '/station.html</code> и выбрать R114-xx — метка сохранится в браузере.</p>' +
+    '</details>' +
+    '<p class="cp-hint">Логин — централизованный: учитель входит на сайт через портал, ученики не вводят логин и пароль.</p>' +
+  '</div>';
+}
+function renderCompSetup(){
+  compSetupInit();
+  if(!compSetupOpen) return;
+  netModalEl.classList.add('comp-setup');
+  if(!netIsAdminUser() || !authUser || !authUser.is_admin){
+    netStepsEl.innerHTML = '<p class="net-step">Соревнование класса доступно администратору после входа через портал.</p>' +
+      '<div class="gp-btns net-row"><button type="button" id="cpBack">← Назад</button></div>';
+    const b = document.getElementById('cpBack'); if(b) b.addEventListener('click', ()=>{ compSetupOpen = false; renderNetBody(); });
+    return;
+  }
+  if(compSetup.loading){
+    netStepsEl.innerHTML = '<p class="net-step">Загружаю классы из auth-web…</p>' +
+      '<div class="gp-btns net-row"><button type="button" id="cpBack">Отмена</button></div>';
+    const b = document.getElementById('cpBack'); if(b) b.addEventListener('click', ()=>{ compSetupOpen = false; renderNetBody(); });
+    return;
+  }
+  if(compSetup.error){
+    netStepsEl.innerHTML = '<p class="net-step cp-warn">' + escapeHtml(compSetup.error) + '</p>' +
+      '<div class="gp-btns net-row"><button type="button" id="cpReload">🔄 Повторить</button>' +
+      '<button type="button" id="cpBack">← Назад</button></div>';
+    document.getElementById('cpReload').addEventListener('click', compLoadClasses);
+    document.getElementById('cpBack').addEventListener('click', ()=>{ compSetupOpen = false; renderNetBody(); });
+    return;
+  }
+  if(!compSetup.groups.length){
+    netStepsEl.innerHTML = '<p class="net-step">В auth-web не найдено групп/классов. Проверьте, что вы вошли как администратор.</p>' +
+      '<div class="gp-btns net-row"><button type="button" id="cpReload">🔄 Повторить</button>' +
+      '<button type="button" id="cpBack">← Назад</button></div>';
+    document.getElementById('cpReload').addEventListener('click', compLoadClasses);
+    document.getElementById('cpBack').addEventListener('click', ()=>{ compSetupOpen = false; renderNetBody(); });
+    return;
+  }
+
+  const students = compSetupStudents();
+  const selected = students.filter(s => compSetup.present.has(s.id)).length;
+  const groupOptions = compSetup.groups.map(g =>
+    '<option value="' + escapeHtml(g.id) + '"' + (String(g.id) === String(compSetup.groupId) ? ' selected' : '') + '>' +
+    escapeHtml(g.name) + (g.user_count != null ? ' · ' + g.user_count + ' чел.' : '') + '</option>').join('');
+  const studentRows = students.length
+    ? students.map(s =>
+      '<label class="cp-student"><input type="checkbox" data-uid="' + s.id + '"' +
+        (compSetup.present.has(s.id) ? ' checked' : '') + '><span>' + escapeHtml(s.name) + '</span></label>').join('')
+    : '<p class="cp-muted">В этом классе нет учеников.</p>';
+
+  netStepsEl.innerHTML =
+    '<div class="cp-setup">' +
+      '<div class="cp-setup-head"><div class="cp-kicker">СОРЕВНОВАНИЕ КЛАССА</div>' +
+        '<p class="cp-muted">Выберите класс, отметьте присутствующих. Сервер построит турнирную сетку: заезды до 6 человек, затем финал. ' +
+        'Каждый заезд показывает администратору, за какой компьютер должен сесть ученик.</p></div>' +
+      (compSetup.notice ? '<div class="cp-note err">' + escapeHtml(compSetup.notice) + '</div>' : '') +
+      '<label class="cp-field">Класс<select id="cpGroup"><option value="">— выберите класс —</option>' + groupOptions + '</select></label>' +
+      '<div class="cp-present-head"><b>Присутствуют: ' + selected + ' / ' + students.length + '</b>' +
+        '<span><button type="button" class="net-mini" id="cpAll">Все</button> ' +
+        '<button type="button" class="net-mini" id="cpNone">Никого</button></span></div>' +
+      '<div class="cp-students" id="cpStudents">' + studentRows + '</div>' +
+      '<div class="cp-setup-grid">' +
+        '<label class="cp-field">Название<input id="cpTitle" class="net-name" maxlength="60" value="' + escapeHtml(compSetup.title) + '"></label>' +
+        '<label class="cp-field">Трасса<select id="cpTrackSel">' + compRaceOptionsHtml({ track: compSetup.track }) + '</select></label>' +
+        '<label class="cp-field">Адрес релея<input id="cpRelayAddr" class="net-name" value="' + escapeHtml(compSetup.relay) + '" placeholder="' + NET_RELAY_DEFAULT + '"></label>' +
+        '<label class="cp-field">Ключ ADMIN_KEY<input id="cpAdminKey" class="net-name" value="' + escapeHtml(compSetup.key) + '"></label>' +
+      '</div>' +
+      compSetupInstructions(compSetup.key, compSetup.relay) +
+      (compSetup.launchUrl ? '<p class="cp-ok">Доска соревнования: <a href="' + escapeHtml(compSetup.launchUrl) + '" target="_blank" rel="noopener">открыть ещё раз</a></p>' : '') +
+      '<div class="cp-foot">' +
+        '<button type="button" class="cp-primary" id="cpCreate">🏆 Создать и открыть доску</button>' +
+        '<button type="button" id="cpReload">🔄 Обновить классы</button>' +
+        '<button type="button" id="cpBack">← Назад</button>' +
+      '</div>' +
+    '</div>';
+
+  document.getElementById('cpBack').addEventListener('click', ()=>{ compSetupOpen = false; renderNetBody(); });
+  document.getElementById('cpReload').addEventListener('click', compLoadClasses);
+  document.getElementById('cpGroup').addEventListener('change', e => compSetupSelectGroup(e.target.value));
+  document.getElementById('cpAll').addEventListener('click', ()=>{
+    compSetup.present = new Set(compSetupStudents().map(s => s.id));
+    renderCompSetup();
+  });
+  document.getElementById('cpNone').addEventListener('click', ()=>{
+    compSetup.present.clear();
+    renderCompSetup();
+  });
+  document.getElementById('cpStudents').addEventListener('change', e=>{
+    const cb = e.target.closest('input[data-uid]');
+    if(!cb) return;
+    const id = Number(cb.dataset.uid);
+    if(cb.checked) compSetup.present.add(id); else compSetup.present.delete(id);
+    const head = document.querySelector('.cp-present-head b');
+    if(head) head.textContent = 'Присутствуют: ' + compSetup.present.size + ' / ' + compSetupStudents().length;
+  });
+  const titleEl = document.getElementById('cpTitle');
+  if(titleEl) titleEl.addEventListener('input', ()=>{ compSetup.title = titleEl.value.slice(0, 60); });
+  const trackEl = document.getElementById('cpTrackSel');
+  if(trackEl) trackEl.addEventListener('change', ()=>{ compSetup.track = trackEl.value; });
+  const relayEl = document.getElementById('cpRelayAddr');
+  if(relayEl) relayEl.addEventListener('input', ()=>{
+    compSetup.relay = relayEl.value.trim();
+    const box = document.getElementById('cpStationLinks');
+    if(box) box.innerHTML = compSetupStationUrls().map((u, i) =>
+      '<div><b>' + COMP_STATIONS[i] + '</b> <code>' + escapeHtml(u) + '</code></div>').join('');
+  });
+  const keyEl = document.getElementById('cpAdminKey');
+  if(keyEl) keyEl.addEventListener('input', ()=>{
+    compSetup.key = keyEl.value.trim();
+    const cmd = document.getElementById('cpKeyCmd');
+    if(cmd) cmd.textContent = 'cd C:\\websites\\na\\fly-web\\relay\nnpm install\n$env:ADMIN_KEY="' + compSetup.key + '"\nnpm start';
+  });
+  document.getElementById('cpCreate').addEventListener('click', compCreateFromSite);
+}
+async function compLoadClasses(){
+  compSetup.loading = true;
+  compSetup.error = '';
+  compSetupOpen = true;
+  renderCompSetup();
+  try{
+    const opts = { credentials:'include', headers:{ 'Accept':'application/json' } };
+    const [gr, us, mb] = await Promise.all([
+      fetch(AUTH_BASE + '/api/groups.php', opts),
+      fetch(AUTH_BASE + '/api/public_users.php', opts),
+      fetch(AUTH_BASE + '/api/user_groups.php', opts),
+    ]);
+    if(!gr.ok || !us.ok || !mb.ok) throw new Error('auth-web вернул HTTP ' + [gr.status, us.status, mb.status].join('/'));
+    const gd = await gr.json(), ud = await us.json(), md = await mb.json();
+    compSetup.groups = Array.isArray(gd.groups) ? gd.groups : [];
+    compSetup.users = Array.isArray(ud.users) ? ud.users : [];
+    compSetup.memberships = Array.isArray(md.memberships) ? md.memberships : [];
+    compSetup.loaded = true;
+    const first = compSetup.groups[0];
+    compSetup.groupId = first ? String(first.id) : '';
+    compSetup.present = new Set(compSetupStudents().map(s => s.id));
+    if(first && !compSetup.title) compSetup.title = 'Соревнование · ' + first.name;
+  }catch(err){
+    compSetup.error = 'Не удалось загрузить классы из auth-web: ' + (err && err.message ? err.message : 'ошибка сети') +
+      '. Войдите на портал и повторите.';
+  }finally{
+    compSetup.loading = false;
+    renderCompSetup();
+  }
+}
+function openCompSetup(){
+  if(!netIsAdminUser()) return;
+  compSetupOpen = true;
+  compSetupInit();
+  if(!compSetup.loaded) compLoadClasses();
+  else renderCompSetup();
+}
+function compCreateFromSite(){
+  const students = compSetupStudents().filter(s => compSetup.present.has(s.id));
+  if(!compSetup.groupId || !students.length){
+    compSetup.notice = 'Выберите класс и отметьте хотя бы одного присутствующего ученика.';
+    renderCompSetup();
+    return;
+  }
+  if(!compSetup.relay){
+    compSetup.notice = 'Укажите адрес релея (IP:порт), например 10.12.6.23:8080.';
+    renderCompSetup();
+    return;
+  }
+  if(!compSetup.key){
+    compSetup.key = compGenKey();
+    try{ localStorage.setItem('fly-comp-admin-key', compSetup.key); }catch(_){}
+  }
+  compSetup.key = String(compSetup.key).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 48) || compGenKey();
+  const groupName = compSetupGroupName();
+  const title = (compSetup.title || '').trim().slice(0, 60) || ('Соревнование · ' + groupName);
+  const payload = {
+    title,
+    classId: compSetup.groupId,
+    className: groupName,
+    track: compSetup.track,
+    adminName: (authUser && (authUser.display_name || authUser.login)) || 'Учитель',
+    students: students.map(s => ({ id: s.id, name: s.name })),
+  };
+  let url = '';
+  try{ url = compSetupAdminUrl(payload); }
+  catch(_){
+    compSetup.notice = 'Некорректный адрес релея. Укажите host:port, например 10.12.6.23:8080.';
+    renderCompSetup();
+    return;
+  }
+  compSetup.launchUrl = url;
+  try{ localStorage.setItem('fly-comp-admin-key', compSetup.key); }catch(_){}
+  try{ localStorage.setItem(LAN_RELAY_KEY, compSetup.relay); }catch(_){}
+  const w = window.open(url, '_blank');
+  if(w){
+    try{ w.opener = null; }catch(_){}
+    compSetup.notice = '';
+  } else {
+    compSetup.notice = 'Браузер заблокировал новую вкладку. Разрешите всплывающие окна и нажмите ссылку «открыть ещё раз» ниже.';
+  }
+  renderCompSetup();
+}
+
 function renderNetBody(){
+  if(NET_AUTO_COMP) return;   // на релее/ПК соревнования — отдельный экран
   if(!netReady()){
     netStepsEl.innerHTML = '<p class="net-step">Для сетевой игры нужен вход через портал — соперники подбираются среди вошедших. Нажмите «🔑 Войти через портал» в панели или на стартовом экране.</p>' + netRelayHtml();
     netBindRelayLine();
     return;
   }
+  if(compSetupOpen){ renderCompSetup(); return; }
+  netModalEl.classList.remove('comp-setup');
   if(!netRoom.active){ renderLobby(); return; }
   renderRoom();
 }
@@ -2069,6 +2483,7 @@ function renderLobby(){
       '<button type="button" id="netQuick"' + (canStart ? '' : ' disabled') + '>⚡ Быстрая игра</button>' +
       (netIsAdminUser() ? '<button type="button" id="netPair" class="net-pair"' + (canStart ? '' : ' disabled') + '>🏁 Парная гонка 1×1</button>' : '') +
       (netIsAdminUser() ? '<button type="button" id="netDirector" class="net-director"' + (canStart ? '' : ' disabled') + '>🎬 Гонка с наблюдателем</button>' : '') +
+      (netIsAdminUser() ? '<button type="button" id="netComp" class="net-comp"' + (canStart ? '' : ' disabled') + '>🏆 Соревнование класса</button>' : '') +
       '<button type="button" id="netRefresh" title="Обновить список">🔄</button>' +
     '</div>' +
     '<p class="net-step">Открытые игры — выберите нужную и нажмите «Войти»:</p>' +
@@ -2080,6 +2495,7 @@ function renderLobby(){
   const q = document.getElementById('netQuick');   if(q) q.addEventListener('click', netQuick);
   const pr = document.getElementById('netPair');   if(pr) pr.addEventListener('click', netCreatePair);
   const dr = document.getElementById('netDirector'); if(dr) dr.addEventListener('click', netCreateDirector);
+  const cp = document.getElementById('netComp');   if(cp) cp.addEventListener('click', openCompSetup);
   const rf = document.getElementById('netRefresh'); if(rf) rf.addEventListener('click', refreshLobby);
   const nm = document.getElementById('netName');
   if(nm) nm.addEventListener('change', ()=>{
@@ -2104,7 +2520,7 @@ function renderRoom(){
   const racerLimit = netRacerLimit();
   const mode = (info.params && info.params.mode) || 'angle';
   const peers = [...netRoom.peers.values()];
-  const racerPeers = peers.filter(p => (p.role || 'racer') !== 'spectator');
+  const racerPeers = peers.filter(p => (p.role || 'racer') === 'racer');
   const racerCount = racerPeers.length + (spectator ? 0 : 1);
   const openRacers = racerPeers.filter(p => p.open).length;
 
@@ -2322,7 +2738,7 @@ function netStopWithNotice(text){
   }
 }
 
-function stopNet(){
+function stopNet(skipRelayLeave){
   if(netKickTimer){ clearTimeout(netKickTimer); netKickTimer = null; }
   if(netRoom.pollTimer){ clearInterval(netRoom.pollTimer); netRoom.pollTimer = null; }
   const roomId = netRoom.id;
@@ -2336,7 +2752,7 @@ function stopNet(){
   netRoom.selfRole = 'racer';
   netUpdateSpectator();
   if(NET_RELAY){
-    relaySend({ t:'leave' });
+    if(!skipRelayLeave) relaySend({ t:'leave' });
     return;
   }
   if(roomId){
@@ -2443,7 +2859,7 @@ function hostStart(){
   /* Комната с наблюдателем: старт, когда подключены минимум двое гонщиков
      и все, кто уже в комнате, успели соединиться. */
   if(netIsSpectate() && netRoom.info && !netRoom.info.started){
-    const list = [...netRoom.peers.values()].filter(p => (p.role || 'racer') !== 'spectator');
+    const list = [...netRoom.peers.values()].filter(p => (p.role || 'racer') === 'racer');
     const open = list.filter(p => p.open).length;
     if(open < 2 || open < list.length){
       netSetStatus('⚠ Нужно минимум два подключённых гонщика', false);
@@ -2459,6 +2875,7 @@ function hostStart(){
 }
 /* Перезапуск идущей/завершённой сетевой гонки — только хост. */
 function netRestartRace(){
+  if(netIsComp()) return;
   if(!netRoom.active || !netRoom.info || !netRoom.info.started) return;
   if(!netRaceIsHost()) return;
   netRaceReset();
@@ -2499,6 +2916,12 @@ function netEnsureTrack(info){
 function applyNetGame(force){
   const info = netRoom.info;
   if(!info) return;
+  if(netIsComp()){
+    /* Турниром управляют сообщения comp; обычный старт/перезапуск не нужен. */
+    compEnsureTrack(info);
+    netUpdateSpectator();
+    return;
+  }
   const isHost = info.host_user_id === netRoom.selfId;
   const started = !!info.started;
   if(!(started || (force && isHost))) return;
@@ -2587,7 +3010,7 @@ function netRaceStop(){
 }
 /* Уровень загружен, все на старте — начинаем общий отсчёт. */
 function netRaceBegin(){
-  if(!netRoom.active || !netRoom.info || !netRoom.info.started) return;
+  if(!netRoom.active || !netRoom.info || !netRoom.info.started || netIsComp()) return;
   netRace.active = true;
   netRace.results.clear(); netRace.ready.clear();
   netRace.selfFailed = false;
@@ -2600,10 +3023,11 @@ function netRaceBegin(){
   netRaceMaybeGo();
 }
 function netRaceMaybeGo(){
-  if(!netRaceIsHost() || netRace.phase !== 'waiting') return;
+  if(netIsComp() || !netRaceIsHost() || netRace.phase !== 'waiting') return;
   if(netRace.ready.size >= netRoom.peers.size) netRaceGo();
 }
 function netRaceGo(){
+  if(netIsComp()) return;
   if(netRace.phase === 'countdown' || netRace.phase === 'running') return;
   netRace.phase = 'countdown';
   netRace.countdown = 3.2;
@@ -2623,6 +3047,20 @@ function netRaceReset(){
   netRaceBegin();
 }
 function netRaceHandle(fromId, m){
+  if(netIsComp()){
+    if(m.t === 'race' && compIsAdminPage()){
+      netRace.results.set(Number(fromId), {
+        name: String(m.name || 'Ученик').slice(0, 60),
+        prog: Number(m.prog) || 0,
+        time: Number(m.time) || 0,
+        done: !!m.done,
+        failed: !!m.failed,
+        fin: m.fin != null ? Number(m.fin) : null,
+      });
+      updateRaceBoard();
+    }
+    return;
+  }
   if(m.t === 'ready'){
     if(netRaceIsHost()){ netRace.ready.add(Number(fromId)); netRaceMaybeGo(); }
     return;
@@ -2654,6 +3092,7 @@ function netRaceHandle(fromId, m){
 }
 function netRaceSendState(force){
   if(!netRace.active || netSelfIsSpectator()) return;
+  if(netIsComp() && !netRoom.compActive) return;
   const now = performance.now();
   if(!force && now - netRace.lastSent < 300) return;
   netRace.lastSent = now;
@@ -2737,8 +3176,9 @@ function renderRaceResult(){
 }
 /* Итоги для админа-наблюдателя: показываем, когда оба гонщика финишировали/сошли. */
 function netSpectatorMaybeResult(){
+  if(netIsComp()) return;
   if(!netSelfIsSpectator() || !netRace.active || netRace.spectatorResultShown) return;
-  const racers = [...netRoom.peers.values()].filter(p => (p.role || 'racer') !== 'spectator');
+  const racers = [...netRoom.peers.values()].filter(p => (p.role || 'racer') === 'racer');
   if(!racers.length) return;
   const allDone = racers.every(p => {
     const r = netRace.results.get(p.userId);
@@ -2797,11 +3237,11 @@ function ensurePeer(userId, name, slot, role){
   if(slot != null) p.slot = Number(slot);
   if(role && role !== p.role){
     p.role = role;
-    if(role === 'spectator' && p.obj) showPeerDrone(p, false);
+    if(p.open) showPeerDrone(p, role === 'racer');
   }
   if(NET_RELAY){
     /* Релей: соединение одно (WebSocket), борт показываем сразу. */
-    if(!p.open){ p.open = true; if(p.role !== 'spectator') showPeerDrone(p, true); }
+    if(!p.open){ p.open = true; if(p.role === 'racer') showPeerDrone(p, true); }
   } else if(!p.pc){
     createPeerConnection(p);
   }
@@ -2913,8 +3353,8 @@ function netIceDone(p){
 
 /* ---------- удалённые борта и подписи имён ---------- */
 function showPeerDrone(p, on){
-  if(on && (p.role || 'racer') === 'spectator'){
-    /* Админ-наблюдатель не летит: его борт другим не показываем. */
+  if(on && (p.role || 'racer') !== 'racer'){
+    /* Наблюдатель и ожидающие гонщики не летят: их борт не показываем. */
     if(p.obj) showPeerDrone(p, false);
     return;
   }
@@ -3017,6 +3457,7 @@ setInterval(()=>{
 
 setInterval(()=>{
   netRaceSendState();
+  if(netIsComp() && !netRoom.compActive) return;
   if(netSelfIsSpectator()) return;
   if(NET_RELAY){
     if(!netRoom.active || !relayReady) return;
@@ -3119,7 +3560,7 @@ function netUpdateSpectator(){
 
 function specRacers(){
   return [...netRoom.peers.values()]
-    .filter(p => (p.role || 'racer') !== 'spectator')
+    .filter(p => (p.role || 'racer') === 'racer')
     .sort((a, b) => (a.slot || 0) - (b.slot || 0) || a.userId - b.userId);
 }
 
@@ -3553,9 +3994,15 @@ function specHudBuild(){
   specMapLegendKey = '';
   specViewKey = '';
   const menu = document.getElementById('specMenuBtn');
-  if(menu) menu.addEventListener('click', ()=> openNetModal());
+  if(menu) menu.addEventListener('click', ()=>{
+    if(COMP_ADMIN_PAGE){ compBoardOpen = true; compAdminRender(netRoom.comp, netRoom.compSelf); }
+    else openNetModal();
+  });
   const leave = document.getElementById('specLeaveBtn');
-  if(leave) leave.addEventListener('click', ()=> netLeave());
+  if(leave) leave.addEventListener('click', ()=>{
+    if(COMP_ADMIN_PAGE) compCloseRequest();
+    else netLeave();
+  });
   specHudBuilt = true;
 }
 
@@ -3705,6 +4152,568 @@ function renderSpectator(){
   renderer.setScissorTest(false);
   renderer.setViewport(0, 0, W, H);
 }
+
+/* ============================================================
+   СОРЕВНОВАНИЕ КЛАССА: доска администратора и экран ученика.
+   Турнир ведёт релей (relay/server.js): он строит сетку, назначает
+   учеников на компьютеры R114-xx и присылает сюда состояние comp.
+   ============================================================ */
+const compAdminEl = document.getElementById('compAdmin');
+const compPrepEl = document.getElementById('compPrep');
+const compStationEl = document.getElementById('compStation');
+const compLiveEl = document.getElementById('compLive');
+let compBoardOpen = false;
+let compNotice = '';
+let compNoticeOk = false;
+let compNoticeTimer = null;
+let compRenderedKey = '';
+
+function compTrackIndex(track){
+  const i = LEVELS.findIndex(l => l.raceId === track);
+  if(i >= 0) return i;
+  return LEVELS.findIndex(l => l.race);
+}
+function compTrackName(track){
+  return NET_RACE_NAMES[track] || 'Трасса';
+}
+function compPhaseText(phase){
+  return ({
+    prep: 'подготовка заезда',
+    countdown: 'отсчёт',
+    running: 'заезд идёт',
+    heat_done: 'заезд завершён',
+    finished: 'соревнование завершено',
+  })[phase] || 'ожидание';
+}
+function compStudentNameById(c, sid){
+  const s = c && c.students ? c.students.find(x => Number(x.id) === Number(sid)) : null;
+  return s ? s.name : ('Ученик ' + sid);
+}
+function compHeatResultFor(c, sid){
+  if(!c || !c.rounds) return null;
+  let best = null;
+  for(const round of c.rounds){
+    for(const h of round.heats){
+      for(const r of (h.results || [])){
+        if(Number(r.sid) === Number(sid)){
+          if(!best || h.id > best.heatId) best = Object.assign({ heatId:h.id, label:h.label, round:h.round }, r);
+        }
+      }
+    }
+  }
+  return best;
+}
+function compLoadTrack(track, force){
+  const i = compTrackIndex(track);
+  if(i < 0) return;
+  if(force || currentLevelIndex !== i || !(LEVELS[currentLevelIndex] || {}).race){
+    loadLevel(i);
+    netRoom.appliedMap = 'race:' + track;
+  }
+}
+function compEnsureTrack(info){
+  if(!NET_AUTO_COMP && !netIsComp()) return;
+  const track = (netRoom.comp && netRoom.comp.track) || netInfoRaceId(info) || 'utt1';
+  compLoadTrack(track, false);
+}
+function compAdminNotice(text, ok){
+  compNotice = String(text || '');
+  compNoticeOk = !!ok;
+  if(compNoticeTimer) clearTimeout(compNoticeTimer);
+  compNoticeTimer = setTimeout(()=>{
+    compNotice = '';
+    if(COMP_ADMIN_PAGE) compAdminRender(netRoom.comp, netRoom.compSelf);
+  }, 9000);
+  if(COMP_ADMIN_PAGE){
+    if(netRoom.comp) compAdminRender(netRoom.comp, netRoom.compSelf);
+    else compAdminBoot();
+  }
+}
+function compStationNotice(text, isError){
+  if(!compStationEl) return;
+  netRoom.compBlocked = true;
+  netRoom.compActive = false;
+  if(typeof drone !== 'undefined') drone.visible = false;
+  if(typeof netRace !== 'undefined' && netRace.active) netRaceStop();
+  compStationEl.innerHTML = '<div class="cs-wait-in">' +
+    '<div class="cs-kicker">СОРЕВНОВАНИЕ КЛАССА</div>' +
+    '<div class="cs-name">Компьютер ' + escapeHtml(NET_STATION || '—') + '</div>' +
+    '<div class="cs-state ' + (isError ? 'err' : '') + '">' + escapeHtml(text) + '</div>' +
+    '<div class="cs-hint">Не закрывайте страницу. Учитель видит подключённые компьютеры.</div>' +
+    '</div>';
+  compStationEl.classList.add('show');
+  if(compLiveEl) compLiveEl.classList.remove('show');
+}
+function compAdminBoot(){
+  if(!compPrepEl) return;
+  document.body.classList.add('comp-admin');
+  compAdminEl.innerHTML = '';
+  compPrepEl.classList.add('show');
+  compPrepEl.innerHTML = '<div class="cp-card cp-boot">' +
+    '<div class="cp-kicker">СОРЕВНОВАНИЕ КЛАССА</div>' +
+    '<h2>Ожидание турнира</h2>' +
+    '<p>Создайте соревнование на сайте <b>fly.nayanovaacademy.ru</b>: «Сетевая игра» → «🏆 Соревнование класса». ' +
+      'Сайт откроет эту страницу с составом класса и запустит сетку.</p>' +
+    (compNotice ? '<div class="cp-note ' + (compNoticeOk ? 'ok' : 'err') + '">' + escapeHtml(compNotice) + '</div>' : '') +
+    '<p class="cp-muted">Релей: <b>' + escapeHtml(relayTarget || location.host) + '</b>. ' +
+      'Компьютеры: ' + COMP_STATIONS.map(escapeHtml).join(', ') + '.</p>' +
+    '<div class="cp-foot"><button type="button" data-comp="refresh">🔄 Проверить турнир</button>' +
+      '<a class="cp-linkbtn" href="https://fly.nayanovaacademy.ru/" target="_blank" rel="noopener">Открыть сайт</a></div>' +
+    '</div>';
+}
+function compRaceOptionsHtml(c){
+  const cur = c ? c.track : 'utt1';
+  return LEVELS.filter(l => l.race).map(l =>
+    '<option value="' + escapeHtml(l.raceId) + '"' + (l.raceId === cur ? ' selected' : '') + '>' +
+    escapeHtml(l.name) + '</option>').join('');
+}
+function compAssignGrid(c, heat, opts){
+  if(!heat) return '<p class="cp-muted">Заезд не назначен.</p>';
+  const map = heat.assignments || {};
+  const byStation = {};
+  for(const [sid, st] of Object.entries(map)) byStation[st] = Number(sid);
+  const stations = (c.stations || COMP_STATIONS.map(id => ({ id, connected:false })));
+  const rows = stations.map(s => {
+    const sid = byStation[s.id] || 0;
+    return '<div class="cp-assign-row' + (sid ? ' filled' : '') + '">' +
+      '<b>' + escapeHtml(s.id) + '</b>' +
+      '<span class="cp-pc ' + (s.connected ? 'on' : 'off') + '">' +
+        (s.connected ? '● подключён' : '○ нет связи') + '</span>' +
+      '<span class="cp-who">' + (sid ? escapeHtml(compStudentNameById(c, sid)) : '— свободен —') + '</span>' +
+    '</div>';
+  }).join('');
+  const assigned = new Set(Object.values(map).map(String));
+  const freeStations = stations.filter(s => s.connected && !assigned.has(s.id));
+  const lacking = (heat.participants || []).filter(sid => !map[sid]).map(sid => compStudentNameById(c, sid));
+  return '<div class="cp-assign">' + rows + '</div>' +
+    (freeStations.length ? '<p class="cp-muted">Свободные подключённые ПК: ' + freeStations.map(s => escapeHtml(s.id)).join(', ') + '.</p>' : '') +
+    (lacking.length ? '<p class="cp-warn">Не хватает подключённых компьютеров для: ' + lacking.map(escapeHtml).join(', ') + '. Подключите их на местах и обновите.</p>' : '') +
+    '<p class="cp-hint">Перед заездом рассадите учеников по указанным компьютерам. Старт — только с этой доски.</p>';
+}
+function compResultsHtml(c, heat){
+  if(!heat || !heat.results || !heat.results.length) return '<p class="cp-muted">Результатов пока нет.</p>';
+  return '<div class="cp-results">' + heat.results.map(r =>
+    '<div class="cp-res-row' + (r.failed ? ' fail' : '') + '">' +
+      '<b>' + r.place + '</b>' +
+      '<span>' + escapeHtml(compStudentNameById(c, r.sid)) + '</span>' +
+      '<em>' + (r.failed ? 'сход' : (r.fin != null ? Number(r.fin).toFixed(2) + ' с' : '—')) + '</em>' +
+    '</div>').join('') + '</div>';
+}
+function compBracketHtml(c){
+  if(!c || !c.rounds) return '';
+  return c.rounds.map(round => {
+    const heats = round.heats.map(h => {
+      const participants = h.participants && h.participants.length
+        ? h.participants.map(sid => {
+            const res = (h.results || []).find(r => Number(r.sid) === Number(sid));
+            const isQual = (h.qualifiers || []).some(q => Number(q) === Number(sid));
+            return '<div class="cp-bp' + (isQual ? ' qual' : '') + (h.status === 'done' && !isQual ? ' out' : '') + '">' +
+              '<span>' + escapeHtml(compStudentNameById(c, sid)) + '</span>' +
+              (res ? '<em>' + res.place + (res.failed ? ' · сход' : (res.fin != null ? ' · ' + Number(res.fin).toFixed(2) + ' с' : '')) + '</em>' : '') +
+            '</div>';
+          }).join('')
+        : (h.sources && h.sources.length
+            ? h.sources.map(src => '<div class="cp-bp src"><span>' + src.place + '-е · Заезд ' + src.heatId + '</span></div>').join('')
+            : '<div class="cp-bp src"><span>—</span></div>');
+      const activeCls = c.currentHeat && c.currentHeat.id === h.id ? ' active' : '';
+      const doneCls = h.status === 'done' ? ' done' : '';
+      return '<div class="cp-heat' + activeCls + doneCls + '">' +
+        '<div class="cp-heat-h"><b>' + escapeHtml(h.label) + '</b><span>' +
+          (h.status === 'done' ? 'завершён' : (h.status === 'running' ? 'идёт' : 'ожидание')) + '</span></div>' +
+        participants +
+      '</div>';
+    }).join('');
+    return '<div class="cp-round"><h4>' + escapeHtml(round.name) + '</h4><div class="cp-heats">' + heats + '</div></div>';
+  }).join('');
+}
+function compStandingsHtml(c, final){
+  if(!c || !c.standings || !c.standings.length) return '<p class="cp-muted">Положение ещё не определено.</p>';
+  return '<div class="cp-stand">' + c.standings.map(r =>
+    '<div class="cp-stand-row ' + (r.status || '') + '">' +
+      '<b>' + r.place + '</b>' +
+      '<span>' + escapeHtml(r.name) + '</span>' +
+      '<em>' + escapeHtml(r.note || '') + (r.fin != null ? ' · ' + Number(r.fin).toFixed(2) + ' с' : '') + '</em>' +
+    '</div>').join('') + '</div>' +
+    '<p class="cp-hint">' + (final ? 'Итоговое положение.' : 'Текущее положение: обновляется после каждого заезда.') + '</p>';
+}
+function compStationLinks(){
+  let base = '';
+  try{ base = relayHttpUrlFromAddr(relayTarget || location.host); }catch(_){ base = 'http://' + (relayTarget || location.host) + '/?lan'; }
+  base = base.replace(/\/?\?lan$/, '');
+  return COMP_STATIONS.map(id => base + '/?lan&station=' + encodeURIComponent(id));
+}
+function compAdminRender(c, self){
+  if(!COMP_ADMIN_PAGE) return;
+  document.body.classList.add('comp-admin');
+  if(!c){
+    compAdminBoot();
+    return;
+  }
+  compLoadTrack(c.track, false);
+  const key = [
+    c.phase, c.track, c.currentHeat && c.currentHeat.id, c.lastHeat && c.lastHeat.id,
+    c.standings && c.standings.map(r => r.place + ':' + r.sid + ':' + (r.note || '') + ':' + (r.fin == null ? '' : r.fin)).join(','),
+    c.stations && c.stations.map(s => s.id + ':' + (s.connected ? 1 : 0)).join(','),
+    compNotice, compBoardOpen,
+  ].join('|');
+  if(key === compRenderedKey && c.phase !== 'running' && c.phase !== 'countdown') return;
+  compRenderedKey = key;
+
+  const running = c.phase === 'running' || c.phase === 'countdown';
+  const showPrep = !running || compBoardOpen;
+  const phaseLabel = compPhaseText(c.phase);
+  const current = c.currentHeat || c.activeHeat;
+  const head = '<div class="cp-live-title"><span>ТУРНИР · ' + escapeHtml(c.className || 'КЛАСС') + '</span>' +
+    '<b>' + escapeHtml(c.title || '') + '</b></div>' +
+    '<div class="cp-live-sub">' + escapeHtml(compTrackName(c.track)) + ' · ' + phaseLabel +
+      (current ? ' · ' + escapeHtml(current.label) : '') + '</div>';
+
+  const topRows = (c.standings || []).slice(0, 8).map(r =>
+    '<div class="cp-live-row ' + (r.status || '') + '"><b>' + r.place + '</b><span>' + escapeHtml(r.name) + '</span><em>' + escapeHtml(r.note || '') + '</em></div>').join('');
+  compAdminEl.innerHTML = head +
+    '<div class="cp-live-rows">' + (topRows || '<div class="cp-muted">Нет участников</div>') + '</div>' +
+    '<div class="cp-live-actions">' +
+      (running ? '<button type="button" data-comp="board">' + (compBoardOpen ? 'Скрыть доску' : 'Сетка и положение') + '</button>' : '') +
+      (running ? '<button type="button" data-comp="finish">■ Завершить заезд</button>' : '') +
+    '</div>' +
+    (compNotice ? '<div class="cp-note ' + (compNoticeOk ? 'ok' : 'err') + '">' + escapeHtml(compNotice) + '</div>' : '');
+
+  compPrepEl.classList.toggle('show', showPrep);
+  if(!showPrep){ compPrepEl.innerHTML = ''; return; }
+
+  let body = '';
+  if(c.phase === 'prep'){
+    const heat = current;
+    body = '<div class="cp-section"><div class="cp-kicker">ЗАЕЗД · ' + escapeHtml(heat ? heat.label : '—') + '</div>' +
+      '<h3>' + escapeHtml((c.rounds.find(r => r.heats.some(h => heat && h.id === heat.id)) || {}).name || '') + '</h3>' +
+      compAssignGrid(c, heat) +
+      '<div class="cp-participants"><span>Участники:</span> ' +
+        ((heat && heat.participants || []).map(sid => '<b class="cp-pill">' + escapeHtml(compStudentNameById(c, sid)) + '</b>').join('')) +
+      '</div>' +
+      '<div class="cp-track"><label>Трасса: <select id="cpTrack"' + (c.startedOnce ? ' disabled' : '') + '>' + compRaceOptionsHtml(c) + '</select></label>' +
+        (c.startedOnce ? '<span class="cp-muted">Трасса зафиксирована после первого заезда</span>' : '') + '</div>' +
+      '<div class="cp-foot">' +
+        '<button class="cp-primary" type="button" data-comp="start"' + (heat && heat.assignmentsReady ? '' : ' disabled') + '>▶ Начать заезд</button>' +
+        '<button type="button" data-comp="refresh">Обновить</button>' +
+        '<button class="cp-danger" type="button" data-comp="close">Закрыть соревнование</button>' +
+      '</div></div>';
+  } else if(c.phase === 'heat_done'){
+    const last = c.lastHeat;
+    const next = c.nextHeat;
+    body = '<div class="cp-section"><div class="cp-kicker">ЗАЕЗД ЗАВЕРШЁН · ' + escapeHtml(last ? last.label : '') + '</div>' +
+      compResultsHtml(c, last) +
+      (next ? '<h3>Следующий заезд · ' + escapeHtml(next.label) + '</h3>' + compAssignGrid(c, next) : '<p class="cp-muted">Следующего заезда нет — финал завершён.</p>') +
+      '<div class="cp-foot">' +
+        '<button class="cp-primary" type="button" data-comp="next">' + (next ? 'Готовить следующий заезд →' : 'Показать итог') + '</button>' +
+        '<button type="button" data-comp="refresh">Обновить</button>' +
+        '<button class="cp-danger" type="button" data-comp="close">Закрыть соревнование</button>' +
+      '</div></div>';
+  } else if(c.phase === 'finished'){
+    body = '<div class="cp-section"><div class="cp-kicker">СОРЕВНОВАНИЕ ЗАВЕРШЕНО</div>' +
+      '<h3>Итоговое положение</h3>' + compStandingsHtml(c, true) +
+      '<div class="cp-foot">' +
+        '<a class="cp-linkbtn" href="https://fly.nayanovaacademy.ru/" target="_blank" rel="noopener">На сайт</a>' +
+        '<button class="cp-danger" type="button" data-comp="close">Закрыть соревнование</button>' +
+      '</div></div>';
+  } else {
+    body = '<div class="cp-section"><div class="cp-kicker">ЗАЕЗД ИДЁТ</div>' +
+      '<h3>' + escapeHtml(current ? current.label : '') + ' · ' + escapeHtml(compTrackName(c.track)) + '</h3>' +
+      '<p class="cp-muted">Трансляция — на доске наблюдателя. Ниже — сетка и текущее положение.</p>' +
+      '<h3>Положение</h3>' + compStandingsHtml(c, false) +
+      '<div class="cp-foot"><button type="button" data-comp="board">Скрыть доску</button><button class="cp-danger" type="button" data-comp="finish">■ Завершить заезд</button></div></div>';
+  }
+
+  compPrepEl.innerHTML = '<div class="cp-card">' +
+    '<div class="cp-head"><div><div class="cp-kicker">СОРЕВНОВАНИЕ КЛАССА</div>' +
+      '<h2>' + escapeHtml(c.title || 'Турнир') + '</h2>' +
+      '<div class="cp-sub">' + escapeHtml(c.className || 'Класс') + ' · ' + escapeHtml(compTrackName(c.track)) + ' · ' + phaseLabel + '</div></div>' +
+      (running ? '<button type="button" class="cp-x" data-comp="board" title="Свернуть доску">✕</button>' : '') + '</div>' +
+    (compNotice ? '<div class="cp-note ' + (compNoticeOk ? 'ok' : 'err') + '">' + escapeHtml(compNotice) + '</div>' : '') +
+    body +
+    '<details class="cp-details"><summary>Текущее турнирное положение</summary>' + compStandingsHtml(c, c.phase === 'finished') + '</details>' +
+    '<details class="cp-details"><summary>Турнирная сетка</summary>' + compBracketHtml(c) + '</details>' +
+    '<details class="cp-details"><summary>Ссылки для компьютеров R114</summary>' +
+      '<div class="cp-links">' + compStationLinks().map((u, i) =>
+        '<div><b>' + COMP_STATIONS[i] + '</b> <code>' + escapeHtml(u) + '</code></div>').join('') + '</div>' +
+      '<button type="button" data-comp="copy-links">Скопировать все ссылки</button></details>' +
+    '</div>';
+}
+function compBeginHeat(c, self){
+  netRoom.compToken = c.currentHeat ? c.currentHeat.startToken : '';
+  netRoom.compActive = true;
+  netRoom.compBlocked = false;
+  netRoom.compLocalDone = false;
+  hideStart();
+  hideOverlay();
+  paused = false;
+  compLoadTrack(c.track, true);
+  netPlaceLocalAtSpawn();
+  netRaceStop();
+  setFlightMode(c.mode || 'angle');
+  drone.visible = camMode !== 3;
+  shadowBlob.visible = true;
+  netRace.active = true;
+  netRace.phase = 'countdown';
+  netRace.countdown = Math.max(0.6, (Number(c.startsInMs) || 3000) / 1000);
+  netRace.startedAt = 0;
+  netRace.selfFailed = false;
+  netRace.spectatorResultShown = true;
+  netRace.results.clear();
+  netRace.ready.clear();
+  renderCountdown();
+  compStationLive(c, self);
+}
+function compLocalFinish(failed){
+  netRaceSendState(true);
+  netRoom.compLocalDone = true;
+  netRoom.compActive = false;
+  netRoom.compBlocked = true;
+  netRace.active = false;
+  netRace.phase = 'idle';
+  netRace.selfFailed = !!failed;
+  if(raceBoardEl) raceBoardEl.classList.remove('show');
+  if(countdownEl) countdownEl.classList.remove('show');
+  drone.visible = false;
+  shadowBlob.visible = false;
+  guideArrow.visible = false;
+  if(compLiveEl) compLiveEl.classList.remove('show');
+  if(compStationEl){
+    compStationEl.classList.add('show');
+    compStationEl.innerHTML = '<div class="cs-wait-in">' +
+      '<div class="cs-kicker">ЗАЕЗД ЗАВЕРШЁН</div>' +
+      '<div class="cs-name">' + escapeHtml((netRoom.compSelf && netRoom.compSelf.name) || 'Ученик') + '</div>' +
+      '<div class="cs-state">' + (failed ? 'Сход. Ждём итогов заезда…' : 'Финиш! Ждём итогов заезда…') + '</div>' +
+      '<div class="cs-hint">Не закрывайте страницу — учитель увидит результат и объявит следующий заезд.</div>' +
+      '</div>';
+  }
+}
+function compStopLocal(){
+  netRaceStop();
+  netRoom.compActive = false;
+  netRoom.compBlocked = true;
+  netRoom.compLocalDone = false;
+  drone.visible = false;
+  shadowBlob.visible = false;
+  guideArrow.visible = false;
+  netRoom.compSeenPhase = (netRoom.comp && netRoom.comp.phase) || '';
+}
+function compStationLive(c, self){
+  if(!compLiveEl) return;
+  const heat = c.currentHeat || c.activeHeat || {};
+  compLiveEl.innerHTML =
+    '<span class="cl-name">' + escapeHtml((self && self.name) || 'Ученик') + '</span>' +
+    '<span class="cl-pc">' + escapeHtml(NET_STATION || '') + '</span>' +
+    '<span class="cl-heat">' + escapeHtml(heat.label || 'Заезд') + '</span>' +
+    '<span class="cl-track">' + escapeHtml(compTrackName(c.track)) + '</span>';
+  compLiveEl.classList.add('show');
+}
+function compStudentResultHtml(c, self){
+  const sid = self && self.sid;
+  const final = (c.standings || []).find(r => Number(r.sid) === Number(sid));
+  const last = compHeatResultFor(c, sid);
+  if(c.phase === 'finished'){
+    return '<div class="cs-place">' + (final ? final.place : '—') + '</div>' +
+      '<div class="cs-state">' + (final ? 'место в соревновании' : 'соревнование завершено') + '</div>' +
+      (last ? '<div class="cs-hint">Последний заезд: ' + escapeHtml(last.label) + ' · ' +
+        (last.failed ? 'сход' : (last.fin != null ? Number(last.fin).toFixed(2) + ' с' : '—')) + '</div>' : '');
+  }
+  if(c.phase === 'heat_done'){
+    const res = (c.lastHeat && c.lastHeat.results || []).find(r => Number(r.sid) === Number(sid));
+    if(res){
+      return '<div class="cs-place">' + res.place + '</div>' +
+        '<div class="cs-state">' + (res.failed ? 'сход в заезде' : 'место в заезде') + '</div>' +
+        '<div class="cs-hint">' + escapeHtml(c.lastHeat.label) + ' · ' +
+          (res.failed ? 'сход' : (res.fin != null ? Number(res.fin).toFixed(2) + ' с' : '—')) + '</div>';
+    }
+    return '<div class="cs-state">Заезд завершён</div><div class="cs-hint">Ожидайте следующего заезда.</div>';
+  }
+  return '';
+}
+function compStudentOnState(c, self){
+  document.body.classList.add('comp-station');
+  compStationEl.classList.add('show');
+  if(!c){
+    if(compLiveEl) compLiveEl.classList.remove('show');
+    compStationNotice('Ожидание соревнования. Учитель ещё не запустил турнир.', false);
+    return;
+  }
+  if(self && self.name) netRoom.selfName = self.name;
+  const active = !!(self && self.active);
+  netRoom.compActive = active && !netRoom.compLocalDone;
+  netRoom.compBlocked = !active || netRoom.compLocalDone;
+  const heat = c.currentHeat || c.activeHeat || {};
+  if(active && (c.phase === 'countdown' || c.phase === 'running')){
+    const token = heat.startToken || '';
+    if(token && token !== netRoom.compToken){
+      netRoom.compLocalDone = false;
+      compBeginHeat(c, self);
+    }
+    if(netRoom.compLocalDone){
+      compStationEl.classList.add('show');
+      return;
+    }
+    if(c.phase === 'running' && netRoom.compActive && !netRace.active && !netRoom.compBlocked){
+      /* догоняем, если сообщение о старте пришло уже после отсчёта */
+      netRoom.compBlocked = false;
+    }
+    compStationEl.classList.remove('show');
+    compStationLive(c, self);
+    return;
+  }
+
+  compStopLocal();
+  if(compLiveEl) compLiveEl.classList.remove('show');
+  const name = (self && self.name) || NET_STATION || 'Ученик';
+  const assignedHere = !!(self && self.sid);
+  const showPlace = !!(self && self.place && c.phase === 'heat_done');
+  let state = '';
+  if(c.phase === 'prep'){
+    const myHeat = c.currentHeat;
+    const inHeat = myHeat && (myHeat.participants || []).some(sid => Number(sid) === Number(self && self.sid));
+    if(inHeat) state = 'Вы в заезде ' + escapeHtml(myHeat.label) + '. Сядьте за компьютер ' + escapeHtml(NET_STATION) + ' и ждите команды учителя.';
+    else state = 'Ваш заезд позже. Ожидайте команды учителя.';
+  } else if(c.phase === 'heat_done' || c.phase === 'finished'){
+    state = compStudentResultHtml(c, self);
+  } else if(c.phase === 'countdown' || c.phase === 'running'){
+    state = 'Сейчас едет другой заезд. Ожидайте своей очереди.';
+  }
+  compStationEl.innerHTML = '<div class="cs-wait-in">' +
+    '<div class="cs-kicker">СОРЕВНОВАНИЕ КЛАССА · ' + escapeHtml(c.className || '') + '</div>' +
+    '<div class="cs-name">' + escapeHtml(name) + '</div>' +
+    '<div class="cs-pc">Компьютер: <b>' + escapeHtml(NET_STATION || '—') + '</b></div>' +
+    '<div class="cs-state">' + state + '</div>' +
+    (showPlace ? '<div class="cs-hint">Текущее место в турнире: <b>' + self.place + '</b>' +
+      (self.note ? ' · ' + escapeHtml(self.note) : '') + '</div>' : '') +
+    '<div class="cs-hint">' + escapeHtml(compTrackName(c.track)) +
+      (c.phase === 'prep' && assignedHere ? ' · ваш заезд: ' + escapeHtml(heat.label || '') : '') +
+      '. Не закрывайте страницу.</div>' +
+    '</div>';
+}
+function compOnState(m){
+  if(!NET_STATION && !COMP_ADMIN_PAGE) return;
+  const c = m.comp || null;
+  const self = m.self || null;
+  if(!c){
+    netRoom.compId = 0;
+    netRoom.compToken = '';
+    netRoom.compLocalDone = false;
+    netRoom.compActive = false;
+    netRoom.compBlocked = true;
+  } else if (Number(c.id) !== netRoom.compId){
+    netRoom.compId = Number(c.id) || 0;
+    netRoom.compToken = '';
+    netRoom.compLocalDone = false;
+    netRoom.compActive = false;
+    netRoom.compBlocked = true;
+    compNotice = '';
+  }
+  netRoom.comp = c;
+  netRoom.compSelf = self;
+  if(self && self.name) netRoom.selfName = self.name;
+  if(NET_STATION){
+    document.body.classList.add('comp-station');
+    compStudentOnState(c, self);
+    return;
+  }
+  if(COMP_ADMIN_PAGE){
+    document.body.classList.add('comp-admin');
+    compAdminOnState(c, self);
+  }
+}
+function compAdminOnState(c, self){
+  if(!COMP_ADMIN_PAGE) return;
+  document.body.classList.add('comp-admin');
+  if(!c){
+    compAdminBoot();
+    return;
+  }
+  netUpdateSpectator();
+  if(!netRoom.compToken || (c.activeHeat && c.activeHeat.startToken && c.activeHeat.startToken !== netRoom.compToken)){
+    netRoom.compToken = c.activeHeat ? c.activeHeat.startToken : '';
+    netRace.results.clear();
+    netRace.ready.clear();
+    netRace.selfFailed = false;
+    netRace.spectatorResultShown = true;
+    if(c.phase === 'countdown' || c.phase === 'running'){
+      compLoadTrack(c.track, true);
+      netRace.active = true;
+      netRace.phase = 'countdown';
+      netRace.startedAt = 0;
+    }
+  }
+  if(c.phase === 'countdown'){
+    netRace.active = true;
+    netRace.phase = 'countdown';
+    netRace.spectatorResultShown = true;
+    netRace.countdown = Math.max(0.6, (Number(c.startsInMs) || 3000) / 1000);
+    renderCountdown();
+  } else if(c.phase === 'running'){
+    netRace.active = true;
+    netRace.phase = 'running';
+    netRace.spectatorResultShown = true;
+    if(!netRace.startedAt) netRace.startedAt = performance.now();
+    if(countdownEl) countdownEl.classList.remove('show');
+  } else {
+    netRace.phase = 'done';
+    if(countdownEl) countdownEl.classList.remove('show');
+  }
+  compAdminRender(c, self);
+}
+function compHandleClosed(message){
+  const wasAdmin = COMP_ADMIN_PAGE;
+  stopNet(true);
+  netSetStatus('○ ' + (message || 'Соревнование закрыто'), false);
+  if(wasAdmin){
+    compNotice = message || 'Соревнование закрыто';
+    compNoticeOk = false;
+    compAdminBoot();
+  } else {
+    netRoom.compBlocked = true;
+    drone.visible = false;
+    compStationNotice(message || 'Соревнование закрыто. Ожидайте новое.', false);
+  }
+}
+function compCloseRequest(){
+  if(!COMP_ADMIN_PAGE) return;
+  if(!relayReady){ compAdminNotice('Релей не подключён. Закрыть соревнование нельзя.', false); return; }
+  if(!confirm('Закрыть соревнование для всех участников?')) return;
+  relaySend({ t:'comp_close' });
+}
+function compAdminClick(e){
+  const btn = e.target.closest('button[data-comp]');
+  if(!btn) return;
+  const action = btn.dataset.comp;
+  if(action === 'refresh'){ compNotice = ''; relaySend({ t:'comp_sync' }); return; }
+  if(!relayReady){ compAdminNotice('Релей не подключён. Проверьте, что сервер запущен, и обновите страницу.', false); return; }
+  if(action === 'start') relaySend({ t:'comp_start' });
+  else if(action === 'finish'){
+    if(confirm('Завершить текущий заезд и зафиксировать результаты?')) relaySend({ t:'comp_finish' });
+  } else if(action === 'next') relaySend({ t:'comp_next' });
+  else if(action === 'close') compCloseRequest();
+  else if(action === 'board'){ compBoardOpen = !compBoardOpen; compAdminRender(netRoom.comp, netRoom.compSelf); }
+  else if(action === 'copy-links'){
+    const text = compStationLinks().join('\n');
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(()=> compAdminNotice('Ссылки скопированы', true)).catch(()=> window.prompt('Ссылки для компьютеров', text));
+    } else {
+      window.prompt('Ссылки для компьютеров', text);
+    }
+  }
+}
+function compAdminChange(e){
+  if(e.target && e.target.id === 'cpTrack'){
+    relaySend({ t:'comp_set_track', track: e.target.value });
+    compNotice = '';
+  }
+}
+function compInitUi(){
+  if(compAdminEl) compAdminEl.addEventListener('click', compAdminClick);
+  if(compPrepEl){
+    compPrepEl.addEventListener('click', compAdminClick);
+    compPrepEl.addEventListener('change', compAdminChange);
+  }
+}
+compInitUi();
 
 /* ============================================================
    Камеры
@@ -5603,7 +6612,11 @@ function hideOverlay(){ overlayEl.classList.remove('show'); overlayEl.innerHTML 
 function completeLevel(){
   levelState.done = true;
   guideArrow.visible = false;
-  if(netRace.active){ netRaceSendState(true); showRaceResult(); return; }
+  if(netRace.active){
+    netRaceSendState(true);
+    if(netIsComp()){ compLocalFinish(false); return; }
+    showRaceResult(); return;
+  }
   const lv = LEVELS[currentLevelIndex];
   const t = levelState.elapsed;
   const s3 = lv.timeLimit ? lv.timeLimit*0.42 : 22;
@@ -5624,7 +6637,7 @@ function completeLevel(){
 function failLevel(reason){
   levelState.done = true;
   guideArrow.visible = false;
-  if(netRace.active){ netRace.selfFailed = true; netRaceSendState(true); showRaceResult(); return; }
+  if(netRace.active){ netRace.selfFailed = true; netRaceSendState(true); if(netIsComp()){ compLocalFinish(true); return; } showRaceResult(); return; }
   showOverlay(`
     <div class="card">
       <h2>Не получилось</h2>
@@ -5739,7 +6752,7 @@ function animate(){
       netRaceGo();   /* хост — по готовности/таймауту; гость — аварийный таймаут */
     }
   }
-  if(!paused && !frozen && !netSpectator){ updatePhysics(dt); updateLevel(dt); }
+  if(!paused && !frozen && !netSpectator && !netRoom.compBlocked){ updatePhysics(dt); updateLevel(dt); }
   if(netSpectator){
     specHudUpdate(performance.now());
     if(netRoom.info && (netRoom.info.started || netIsDirector())){
@@ -5752,18 +6765,30 @@ function animate(){
   } else {
     renderer.render(scene, camera);
   }
-  if(camMode === 3 && !netSpectator) drawFpvHud();
+  if(camMode === 3 && !netSpectator && !netRoom.compBlocked) drawFpvHud();
 }
 loadLevel(0);
 animate();
 
 /* Стартовый экран при загрузке. */
-showStart(1);
-/* Переход с сайта в парную гонку на релее: сразу открываем сетевое окно
-   и подключаемся к релею, чтобы ученику не нужно было искать меню. */
-if(NET_AUTO_PAIR || NET_AUTO_DIRECTOR){
+if(NET_AUTO_COMP){
   hideStart();
-  openNetModal();
+  if(NET_STATION){
+    document.body.classList.add('comp-station');
+    compStationNotice('Подключение к соревнованию…', false);
+  } else {
+    document.body.classList.add('comp-admin');
+    compAdminBoot();
+  }
+  relayConnect();
+} else {
+  showStart(1);
+  /* Переход с сайта в парную гонку на релее: сразу открываем сетевое окно
+     и подключаемся к релею, чтобы ученику не нужно было искать меню. */
+  if(NET_AUTO_PAIR || NET_AUTO_DIRECTOR){
+    hideStart();
+    openNetModal();
+  }
 }
 
 /* ============================================================

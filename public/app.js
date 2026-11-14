@@ -2378,6 +2378,7 @@ function renderCompSetup(){
         '<span><button type="button" class="net-mini" id="cpAll">Все</button> ' +
         '<button type="button" class="net-mini" id="cpNone">Никого</button></span></div>' +
       '<div class="cp-students" id="cpStudents">' + studentRows + '</div>' +
+      '<p class="cp-hint">Счётчик «Сколько участников» отмечает первых N в списке; состав ниже можно изменить вручную.</p>' +
       '<div class="cp-present-head"><b id="cpStSummary">Компьютеры: ' + stationIds.length + ' / ' + COMP_STATIONS.length + '</b>' +
         '<span><button type="button" class="net-mini" id="cpStAll">Все</button> ' +
         '<button type="button" class="net-mini" id="cpStNone">Никого</button></span></div>' +

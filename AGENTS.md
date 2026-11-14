@@ -301,9 +301,11 @@ AGENTS.md               # этот файл
    `comp_create`. Сервер (`relay/server.js`: `compBuildBracket`, `compStartHeat`,
    `compFinalizeHeat`) строит заезды до 6 + финал, ведёт `phase`
    `prep|countdown|running|heat_done|finished`, сам назначает учеников на
-   подключённые станции `R114-xx` и шлёт `comp{comp,self}`. Ученик — `?station=`
-   (или `station.html` → localStorage `fly-lan-station`), входит без логина;
-   `self.active` true только в его заезде. В `app.js` это `compOnState()`:
+   выбранные подключённые станции `R114-xx` (`comp.stationIds`, размер заезда
+   `comp.heatSize = min(6, число ПК, число участников)`) и шлёт `comp{comp,self}`.
+   Ученик — `?station=` (или `station.html` → localStorage `fly-lan-station`),
+   входит без логина; `self.active` true только в его заезде, у незадействованного
+   ПК `self.allowed=false`. В `app.js` это `compOnState()`:
    админ — `#compAdmin`/`#compPrep` + директор-наблюдатель, ученик —
    `#compStation`/`#compLive`; `compBeginHeat()` грузит трассу и запускает
    общий отсчёт, `compLocalFinish()` завершает заезд. `applyNetGame` для

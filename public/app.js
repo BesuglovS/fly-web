@@ -1910,6 +1910,10 @@ function relayOnMessage(data){
       compStationNotice('Свободных мест в соревновании нет. Сообщите учителю.', true);
       return;
     }
+    if(m.code === 'comp_station_inactive'){
+      compStationNotice('Этот компьютер не задействован в соревновании.', false);
+      return;
+    }
     if(/^comp_/.test(String(m.code || ''))){
       netSetStatus('⚠ ' + (m.message || 'Ошибка соревнования'), false);
       compAdminNotice(m.message || 'Ошибка соревнования', false);
@@ -2032,7 +2036,10 @@ function compIsStationPage(){ return !!NET_STATION && !COMP_ADMIN_PAGE; }
 function netIsSpectate(){ return netIsPair() || netIsDirector(); }
 function netRacerLimit(){
   if(netIsPair()) return 2;
-  if(netIsComp()) return 6;
+  if(netIsComp()){
+    const n = Number(netRoom.comp && netRoom.comp.heatSize);
+    return (n >= 1 && n <= 6) ? n : 6;
+  }
   if(netIsDirector()){
     const n = Number(netRoom.info && netRoom.info.params && netRoom.info.params.racersMax);
     return (n >= 2 && n <= 6) ? n : 6;
@@ -2153,6 +2160,7 @@ const compSetup = {
   memberships: [],
   groupId: '',
   present: new Set(),
+  stations: new Set(COMP_STATIONS),
   title: '',
   track: 'utt1',
   key: '',
@@ -2182,6 +2190,9 @@ function compSetupStudents(){
     .map(u => ({ id: Number(u.id), name: u.display_name || u.login || ('Ученик ' + u.id) }))
     .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
 }
+function compSetupStationList(){
+  return COMP_STATIONS.filter(id => compSetup.stations.has(id));
+}
 function compSetupSelectGroup(groupId){
   compSetup.groupId = String(groupId || '');
   compSetup.present = new Set(compSetupStudents().map(s => s.id));
@@ -2205,14 +2216,20 @@ function compSetupAdminUrl(payload){
   u.hash = 'comp=' + b64UrlEncode(JSON.stringify(payload));
   return u.toString();
 }
-function compSetupStationUrls(){
+function compSetupStationUrls(ids){
   let base;
   try{ base = relayHttpUrlFromAddr(compSetup.relay); }catch(_){ base = 'http://' + compSetup.relay + '/?lan'; }
   base = base.replace(/\/?\?lan$/, '');
-  return COMP_STATIONS.map(id => base + '/?lan&station=' + encodeURIComponent(id));
+  const list = Array.isArray(ids) && ids.length ? ids : [];
+  return list.map(id => ({ id, url: base + '/?lan&station=' + encodeURIComponent(id) }));
+}
+function compSetupLinksHtml(ids){
+  const urls = compSetupStationUrls(ids);
+  if(!urls.length) return '<div class="cp-muted">Компьютеры не выбраны.</div>';
+  return urls.map(x => '<div><b>' + escapeHtml(x.id) + '</b> <code>' + escapeHtml(x.url) + '</code></div>').join('');
 }
 function compSetupInstructions(key, relay){
-  const urls = compSetupStationUrls();
+  const selectedStations = compSetupStationList();
   return '<div class="cp-instructions">' +
     '<h3>Как запустить релей</h3>' +
     '<ol>' +
@@ -2222,20 +2239,53 @@ function compSetupInstructions(key, relay){
         '<span class="cp-muted">Linux/macOS: <code>ADMIN_KEY=' + escapeHtml(key) + ' npm start</code></span>' +
       '</li>' +
       '<li>Разрешите в брандмауэре порт <b>8080</b> (TCP).</li>' +
-      '<li>На каждом компьютере класса откройте свою ссылку из списка ниже.</li>' +
+      '<li>На каждом выбранном компьютере класса откройте свою ссылку из списка ниже.</li>' +
       '<li>Вернитесь сюда и нажмите «Создать и открыть доску». Ученикам логин не нужен.</li>' +
     '</ol>' +
     '<p class="cp-muted">Адрес релея: <b>' + escapeHtml(relay || '—') + '</b>. Проверка: <code>http://' +
       escapeHtml((relay || '').replace(/^https?:\/\//, '').replace(/\/.*$/, '') || 'IP:8080') + '/healthz</code> → ok.</p>' +
-    '<details class="cp-details" open><summary>Ссылки для компьютеров R114</summary>' +
-      '<div class="cp-links" id="cpStationLinks">' + urls.map((u, i) =>
-        '<div><b>' + COMP_STATIONS[i] + '</b> <code>' + escapeHtml(u) + '</code></div>').join('') + '</div>' +
+    '<details class="cp-details" open><summary>Ссылки для выбранных компьютеров</summary>' +
+      '<div class="cp-links" id="cpStationLinks">' + compSetupLinksHtml(selectedStations) + '</div>' +
       '<p class="cp-hint">Можно один раз открыть на каждом ПК <code>http://' +
         escapeHtml((relay || '').replace(/^https?:\/\//, '').replace(/\/.*$/, '') || 'IP:8080') +
         '/station.html</code> и выбрать R114-xx — метка сохранится в браузере.</p>' +
     '</details>' +
     '<p class="cp-hint">Логин — централизованный: учитель входит на сайт через портал, ученики не вводят логин и пароль.</p>' +
   '</div>';
+}
+function compSetupHeatText(selected, stationCount){
+  if(!stationCount) return 'Выберите хотя бы один компьютер.';
+  if(!selected) return 'Отметьте участников.';
+  if(selected > 1 && stationCount < 2) return 'Для нескольких участников нужно минимум два компьютера.';
+  const heat = Math.max(1, Math.min(6, stationCount, selected));
+  return 'В одном заезде — до ' + heat + ' чел. (компьютеров: ' + stationCount + ', участников: ' + selected + ').';
+}
+function compSetupSummary(){
+  if(!compSetupOpen) return;
+  const students = compSetupStudents();
+  const selected = students.filter(s => compSetup.present.has(s.id)).length;
+  const stationCount = compSetup.stations.size;
+  const part = document.getElementById('cpPartSummary');
+  if(part) part.textContent = 'Участники: ' + selected + ' / ' + students.length;
+  const st = document.getElementById('cpStSummary');
+  if(st) st.textContent = 'Компьютеры: ' + stationCount + ' / ' + COMP_STATIONS.length;
+  const hint = document.getElementById('cpHeatHint');
+  if(hint) hint.textContent = compSetupHeatText(selected, stationCount);
+  const countEl = document.getElementById('cpCount');
+  if(countEl && countEl.value !== String(selected)) countEl.value = String(selected);
+}
+function compSetupApplyCount(n){
+  const all = compSetupStudents();
+  const take = Math.max(0, Math.min(Number(n) || 0, all.length));
+  compSetup.present = new Set(all.slice(0, take).map(s => s.id));
+  document.querySelectorAll('#cpStudents input[data-uid]').forEach(cb => {
+    cb.checked = compSetup.present.has(Number(cb.dataset.uid));
+  });
+  compSetupSummary();
+}
+function compSetupUpdateStationLinks(){
+  const box = document.getElementById('cpStationLinks');
+  if(box) box.innerHTML = compSetupLinksHtml(compSetupStationList());
 }
 function renderCompSetup(){
   compSetupInit();
@@ -2291,6 +2341,7 @@ function renderCompSetup(){
 
   const students = compSetupStudents();
   const selected = students.filter(s => compSetup.present.has(s.id)).length;
+  const stationIds = compSetupStationList();
   const groupOptions = compSetup.groups.map(g =>
     '<option value="' + escapeHtml(g.id) + '"' + (String(g.id) === String(compSetup.groupId) ? ' selected' : '') + '>' +
     escapeHtml(g.name) + (g.user_count != null ? ' · ' + g.user_count + ' чел.' : '') + '</option>').join('');
@@ -2299,25 +2350,39 @@ function renderCompSetup(){
       '<label class="cp-student"><input type="checkbox" data-uid="' + s.id + '"' +
         (compSetup.present.has(s.id) ? ' checked' : '') + '><span>' + escapeHtml(s.name) + '</span></label>').join('')
     : '<p class="cp-muted">В этом классе нет учеников.</p>';
+  const stationRows = COMP_STATIONS.map(id =>
+    '<label class="cp-student"><input type="checkbox" data-station="' + escapeHtml(id) + '"' +
+      (compSetup.stations.has(id) ? ' checked' : '') + '><span>' + escapeHtml(id) + '</span></label>').join('');
+  const countOptions = students.length
+    ? '<option value="0"' + (selected === 0 ? ' selected' : '') + '>—</option>' +
+      students.map((s, i) => '<option value="' + (i + 1) + '"' + (selected === i + 1 ? ' selected' : '') + '>' + (i + 1) + '</option>').join('')
+    : '<option value="0" selected>0</option>';
+  const heatHint = compSetupHeatText(selected, stationIds.length);
 
   netStepsEl.innerHTML =
     '<div class="cp-setup">' +
       '<div class="cp-setup-head"><div class="cp-kicker">СОРЕВНОВАНИЕ КЛАССА</div>' +
-        '<p class="cp-muted">Выберите класс, отметьте присутствующих. Сервер построит турнирную сетку: заезды до 6 человек, затем финал. ' +
+        '<p class="cp-muted">Выберите класс, отметьте участников и компьютеры. Сервер построит турнирную сетку: заезды до 6 человек, затем финал. ' +
         'Каждый заезд показывает администратору, за какой компьютер должен сесть ученик.</p>' +
         '<p class="cp-muted">Выбор класса работает без релея. Для заездов запустите relay по инструкции ниже и нажмите «Создать и открыть доску».</p></div>' +
       (compSetup.notice ? '<div class="cp-note err">' + escapeHtml(compSetup.notice) + '</div>' : '') +
       '<label class="cp-field">Класс<select id="cpGroup"><option value="">— выберите класс —</option>' + groupOptions + '</select></label>' +
-      '<div class="cp-present-head"><b>Присутствуют: ' + selected + ' / ' + students.length + '</b>' +
-        '<span><button type="button" class="net-mini" id="cpAll">Все</button> ' +
-        '<button type="button" class="net-mini" id="cpNone">Никого</button></span></div>' +
-      '<div class="cp-students" id="cpStudents">' + studentRows + '</div>' +
       '<div class="cp-setup-grid">' +
+        '<label class="cp-field">Сколько участников<select id="cpCount">' + countOptions + '</select></label>' +
         '<label class="cp-field">Название<input id="cpTitle" class="net-name" maxlength="60" value="' + escapeHtml(compSetup.title) + '"></label>' +
         '<label class="cp-field">Трасса<select id="cpTrackSel">' + compRaceOptionsHtml({ track: compSetup.track }) + '</select></label>' +
         '<label class="cp-field">Адрес релея<input id="cpRelayAddr" class="net-name" value="' + escapeHtml(compSetup.relay) + '" placeholder="' + NET_RELAY_DEFAULT + '"></label>' +
         '<label class="cp-field">Ключ ADMIN_KEY<input id="cpAdminKey" class="net-name" value="' + escapeHtml(compSetup.key) + '"></label>' +
       '</div>' +
+      '<div class="cp-present-head"><b id="cpPartSummary">Участники: ' + selected + ' / ' + students.length + '</b>' +
+        '<span><button type="button" class="net-mini" id="cpAll">Все</button> ' +
+        '<button type="button" class="net-mini" id="cpNone">Никого</button></span></div>' +
+      '<div class="cp-students" id="cpStudents">' + studentRows + '</div>' +
+      '<div class="cp-present-head"><b id="cpStSummary">Компьютеры: ' + stationIds.length + ' / ' + COMP_STATIONS.length + '</b>' +
+        '<span><button type="button" class="net-mini" id="cpStAll">Все</button> ' +
+        '<button type="button" class="net-mini" id="cpStNone">Никого</button></span></div>' +
+      '<div class="cp-students cp-stations" id="cpStations">' + stationRows + '</div>' +
+      '<p class="cp-hint" id="cpHeatHint">' + escapeHtml(heatHint) + '</p>' +
       compSetupInstructions(compSetup.key, compSetup.relay) +
       (compSetup.launchUrl ? '<p class="cp-ok">Доска соревнования: <a href="' + escapeHtml(compSetup.launchUrl) + '" target="_blank" rel="noopener">открыть ещё раз</a></p>' : '') +
       '<div class="cp-foot">' +
@@ -2332,19 +2397,42 @@ function renderCompSetup(){
   document.getElementById('cpGroup').addEventListener('change', e => compSetupSelectGroup(e.target.value));
   document.getElementById('cpAll').addEventListener('click', ()=>{
     compSetup.present = new Set(compSetupStudents().map(s => s.id));
-    renderCompSetup();
+    document.querySelectorAll('#cpStudents input[data-uid]').forEach(cb => { cb.checked = true; });
+    compSetupSummary();
   });
   document.getElementById('cpNone').addEventListener('click', ()=>{
     compSetup.present.clear();
-    renderCompSetup();
+    document.querySelectorAll('#cpStudents input[data-uid]').forEach(cb => { cb.checked = false; });
+    compSetupSummary();
   });
+  const countEl = document.getElementById('cpCount');
+  if(countEl) countEl.addEventListener('change', ()=> compSetupApplyCount(countEl.value));
   document.getElementById('cpStudents').addEventListener('change', e=>{
     const cb = e.target.closest('input[data-uid]');
     if(!cb) return;
     const id = Number(cb.dataset.uid);
     if(cb.checked) compSetup.present.add(id); else compSetup.present.delete(id);
-    const head = document.querySelector('.cp-present-head b');
-    if(head) head.textContent = 'Присутствуют: ' + compSetup.present.size + ' / ' + compSetupStudents().length;
+    compSetupSummary();
+  });
+  document.getElementById('cpStAll').addEventListener('click', ()=>{
+    compSetup.stations = new Set(COMP_STATIONS);
+    document.querySelectorAll('#cpStations input[data-station]').forEach(cb => { cb.checked = true; });
+    compSetupSummary();
+    compSetupUpdateStationLinks();
+  });
+  document.getElementById('cpStNone').addEventListener('click', ()=>{
+    compSetup.stations.clear();
+    document.querySelectorAll('#cpStations input[data-station]').forEach(cb => { cb.checked = false; });
+    compSetupSummary();
+    compSetupUpdateStationLinks();
+  });
+  document.getElementById('cpStations').addEventListener('change', e=>{
+    const cb = e.target.closest('input[data-station]');
+    if(!cb) return;
+    const id = cb.dataset.station;
+    if(cb.checked) compSetup.stations.add(id); else compSetup.stations.delete(id);
+    compSetupSummary();
+    compSetupUpdateStationLinks();
   });
   const titleEl = document.getElementById('cpTitle');
   if(titleEl) titleEl.addEventListener('input', ()=>{ compSetup.title = titleEl.value.slice(0, 60); });
@@ -2353,9 +2441,7 @@ function renderCompSetup(){
   const relayEl = document.getElementById('cpRelayAddr');
   if(relayEl) relayEl.addEventListener('input', ()=>{
     compSetup.relay = relayEl.value.trim();
-    const box = document.getElementById('cpStationLinks');
-    if(box) box.innerHTML = compSetupStationUrls().map((u, i) =>
-      '<div><b>' + COMP_STATIONS[i] + '</b> <code>' + escapeHtml(u) + '</code></div>').join('');
+    compSetupUpdateStationLinks();
   });
   const keyEl = document.getElementById('cpAdminKey');
   if(keyEl) keyEl.addEventListener('input', ()=>{
@@ -2415,8 +2501,19 @@ function openCompSetup(){
 }
 function compCreateFromSite(){
   const students = compSetupStudents().filter(s => compSetup.present.has(s.id));
+  const stations = compSetupStationList();
   if(!compSetup.groupId || !students.length){
-    compSetup.notice = 'Выберите класс и отметьте хотя бы одного присутствующего ученика.';
+    compSetup.notice = 'Выберите класс и отметьте хотя бы одного участника.';
+    renderCompSetup();
+    return;
+  }
+  if(!stations.length){
+    compSetup.notice = 'Выберите хотя бы один компьютер для соревнования.';
+    renderCompSetup();
+    return;
+  }
+  if(students.length > 1 && stations.length < 2){
+    compSetup.notice = 'Для нескольких участников выберите минимум два компьютера.';
     renderCompSetup();
     return;
   }
@@ -2438,6 +2535,7 @@ function compCreateFromSite(){
     className: groupName,
     track: compSetup.track,
     adminName: (authUser && (authUser.display_name || authUser.login)) || 'Учитель',
+    stations: stations,
     students: students.map(s => ({ id: s.id, name: s.name })),
   };
   let url = '';
@@ -4368,11 +4466,13 @@ function compStandingsHtml(c, final){
     '</div>').join('') + '</div>' +
     '<p class="cp-hint">' + (final ? 'Итоговое положение.' : 'Текущее положение: обновляется после каждого заезда.') + '</p>';
 }
-function compStationLinks(){
+function compStationLinks(ids){
   let base = '';
   try{ base = relayHttpUrlFromAddr(relayTarget || location.host); }catch(_){ base = 'http://' + (relayTarget || location.host) + '/?lan'; }
   base = base.replace(/\/?\?lan$/, '');
-  return COMP_STATIONS.map(id => base + '/?lan&station=' + encodeURIComponent(id));
+  const list = (Array.isArray(ids) && ids.length ? ids : COMP_STATIONS)
+    .filter(id => COMP_STATIONS.indexOf(id) >= 0);
+  return list.map(id => ({ id, url: base + '/?lan&station=' + encodeURIComponent(id) }));
 }
 function compAdminRender(c, self){
   if(!COMP_ADMIN_PAGE) return;
@@ -4398,6 +4498,7 @@ function compAdminRender(c, self){
   const head = '<div class="cp-live-title"><span>ТУРНИР · ' + escapeHtml(c.className || 'КЛАСС') + '</span>' +
     '<b>' + escapeHtml(c.title || '') + '</b></div>' +
     '<div class="cp-live-sub">' + escapeHtml(compTrackName(c.track)) + ' · ' + phaseLabel +
+      ' · до ' + (Number(c.heatSize) || 6) + ' в заезде' +
       (current ? ' · ' + escapeHtml(current.label) : '') + '</div>';
 
   const topRows = (c.standings || []).slice(0, 8).map(r =>
@@ -4465,8 +4566,8 @@ function compAdminRender(c, self){
     '<details class="cp-details"><summary>Текущее турнирное положение</summary>' + compStandingsHtml(c, c.phase === 'finished') + '</details>' +
     '<details class="cp-details"><summary>Турнирная сетка</summary>' + compBracketHtml(c) + '</details>' +
     '<details class="cp-details"><summary>Ссылки для компьютеров R114</summary>' +
-      '<div class="cp-links">' + compStationLinks().map((u, i) =>
-        '<div><b>' + COMP_STATIONS[i] + '</b> <code>' + escapeHtml(u) + '</code></div>').join('') + '</div>' +
+      '<div class="cp-links">' + compStationLinks(c.stationIds).map(x =>
+        '<div><b>' + escapeHtml(x.id) + '</b> <code>' + escapeHtml(x.url) + '</code></div>').join('') + '</div>' +
       '<button type="button" data-comp="copy-links">Скопировать все ссылки</button></details>' +
     '</div>';
 }
@@ -4570,6 +4671,18 @@ function compStudentOnState(c, self){
     return;
   }
   if(self && self.name) netRoom.selfName = self.name;
+  if(self && self.allowed === false){
+    compStopLocal();
+    if(compLiveEl) compLiveEl.classList.remove('show');
+    compStationEl.classList.add('show');
+    compStationEl.innerHTML = '<div class="cs-wait-in">' +
+      '<div class="cs-kicker">СОРЕВНОВАНИЕ КЛАССА · ' + escapeHtml(c.className || '') + '</div>' +
+      '<div class="cs-name">Компьютер ' + escapeHtml(self.station || NET_STATION || '') + '</div>' +
+      '<div class="cs-state">Этот компьютер не задействован в соревновании.</div>' +
+      '<div class="cs-hint">Учитель выбрал другие компьютеры. Ожидайте или сообщите учителю.</div>' +
+      '</div>';
+    return;
+  }
   const active = !!(self && self.active);
   netRoom.compActive = active && !netRoom.compLocalDone;
   netRoom.compBlocked = !active || netRoom.compLocalDone;
@@ -4724,7 +4837,7 @@ function compAdminClick(e){
   else if(action === 'close') compCloseRequest();
   else if(action === 'board'){ compBoardOpen = !compBoardOpen; compAdminRender(netRoom.comp, netRoom.compSelf); }
   else if(action === 'copy-links'){
-    const text = compStationLinks().join('\n');
+    const text = compStationLinks(netRoom.comp && netRoom.comp.stationIds).map(x => x.url).join('\n');
     if(navigator.clipboard && navigator.clipboard.writeText){
       navigator.clipboard.writeText(text).then(()=> compAdminNotice('Ссылки скопированы', true)).catch(()=> window.prompt('Ссылки для компьютеров', text));
     } else {

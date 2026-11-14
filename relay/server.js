@@ -14,7 +14,7 @@
  * Протокол (JSON):
  *   клиент → релей: hello{name,admin?,station?} | lobby | create{title,max,pair?,director?}
  *                   | join{roomId} | quick | control{map,mode,started,max,title,race?}
- *                   | comp_create{title,classId,className,track,adminName,students[]}
+ *                   | comp_create{title,classId,className,track,adminName,students[],stations[]}
  *                   | comp_sync | comp_start | comp_finish | comp_next
  *                   | comp_set_track{track} | comp_close | st{p,q} | leave
  *   релей → клиент: lobby{rooms,maps,races,maxOptions,maxHard,self}
@@ -182,6 +182,8 @@ function compStateSnapshot() {
       mode: comp.mode,
       adminName: comp.adminName,
       createdAt: comp.createdAt,
+      stationIds: (comp.stationIds || STATIONS).slice(),
+      heatSize: Number(comp.heatSize) || COMP_MAX,
       students: comp.students.map((s) => ({ id: Number(s.id), name: String(s.name) })),
       rounds: comp.rounds.map((r) => ({
         index: Number(r.index) || 1,
@@ -348,6 +350,17 @@ function compRestoreState() {
     return false;
   }
 
+  const stationIds = [];
+  const rawStations = Array.isArray(saved.stationIds) ? saved.stationIds : STATIONS;
+  for (const raw of rawStations) {
+    const id = sanitizeStation(raw);
+    if (id && stationIds.indexOf(id) < 0) stationIds.push(id);
+  }
+  stationIds.sort((a, b) => STATIONS.indexOf(a) - STATIONS.indexOf(b));
+  if (!stationIds.length) stationIds.push(...STATIONS);
+  let heatSize = Number(saved.heatSize) || Math.min(COMP_MAX, stationIds.length, students.length);
+  heatSize = Math.max(1, Math.min(COMP_MAX, stationIds.length, students.length, heatSize));
+
   comp = {
     id: Number(saved.id) || Date.now(),
     title: sanitizeName(saved.title, 60) || 'Соревнование',
@@ -358,6 +371,8 @@ function compRestoreState() {
     adminId: 0,
     adminName: sanitizeName(saved.adminName, COMP_NAME_MAX) || 'Учитель',
     createdAt: Number(saved.createdAt) || Date.now(),
+    stationIds,
+    heatSize,
     students,
     rounds,
     currentHeatId: Number(saved.currentHeatId) || 0,
@@ -481,7 +496,9 @@ function compStationClient(station) {
 }
 function compConnectedStations() {
   const room = comp && rooms.get(comp.roomId);
-  return STATIONS.map((id) => {
+  const allowed = (comp && Array.isArray(comp.stationIds) && comp.stationIds.length)
+    ? comp.stationIds : STATIONS;
+  return allowed.map((id) => {
     const client = compStationClient(id);
     return {
       id,
@@ -529,7 +546,9 @@ function compNewHeat(round, index, participants, sources) {
 function compBuildBracket(students) {
   compHeatSeq = 0;
   const ids = students.map((s) => s.id);
-  const firstGroups = compChunk(ids, COMP_MAX);
+  let cap = Math.max(1, Math.min(COMP_MAX, Number(comp && comp.heatSize) || COMP_MAX));
+  if (cap < 2 && ids.length > 1) cap = 2;   // защита от зацикливания; старт всё равно потребует 2 ПК
+  const firstGroups = compChunk(ids, cap);
   const firstHeats = firstGroups.map((parts, i) => compNewHeat(1, i + 1, parts, []));
   const rounds = [{
     index: 1,
@@ -539,12 +558,12 @@ function compBuildBracket(students) {
   let prev = firstHeats;
   let roundIndex = 1;
   while (prev.length > 1) {
-    const q = Math.max(1, Math.floor(COMP_MAX / prev.length));
+    const q = Math.max(1, Math.floor(cap / prev.length));
     const sources = [];
     for (const heat of prev) {
       for (let place = 1; place <= q; place++) sources.push({ heatId: heat.id, place });
     }
-    const groups = compChunk(sources, COMP_MAX);
+    const groups = compChunk(sources, cap);
     const heats = groups.map((srcs, i) => compNewHeat(roundIndex + 1, i + 1, [], srcs));
     const isFinal = heats.length === 1;
     rounds.push({
@@ -828,6 +847,8 @@ function compPublic() {
     mode: comp.mode,
     phase: comp.phase,
     capacity: COMP_MAX,
+    heatSize: Number(comp.heatSize) || COMP_MAX,
+    stationIds: (comp.stationIds || STATIONS).slice(),
     createdAt: comp.createdAt,
     startsInMs: comp.phase === 'countdown' ? Math.max(0, comp.startAt - Date.now()) : 0,
     startedOnce,
@@ -856,6 +877,7 @@ function compSelfFor(client) {
     sid: 0,
     name: client.station || client.name,
     active: false,
+    allowed: true,
     heatId: 0,
     heatLabel: '',
   };
@@ -865,8 +887,11 @@ function compSelfFor(client) {
       role: 'admin',
       name: comp.adminName || client.name,
       station: '',
+      allowed: true,
     });
   }
+  base.allowed = !!client.station
+    && (!comp.stationIds || !comp.stationIds.length || comp.stationIds.indexOf(client.station) >= 0);
   let heat = compFindHeat(comp.activeHeatId);
   if (!heat && comp.phase === 'prep') heat = compFindHeat(comp.currentHeatId);
   if (!heat) heat = compFindHeat(comp.lastHeatId);
@@ -962,6 +987,15 @@ function compTryJoin(client, quiet) {
     if (!quiet) compSendState(client);
     return true;
   }
+  if (client.station && comp.stationIds && comp.stationIds.length
+    && comp.stationIds.indexOf(client.station) < 0) {
+    send(client.ws, {
+      t: 'error',
+      code: 'comp_station_inactive',
+      message: 'Этот компьютер не задействован в соревновании',
+    });
+    return false;
+  }
   if (client.roomId === room.id) {
     if (!quiet) compSendState(client);
     return true;
@@ -1056,6 +1090,31 @@ function compCreate(adminClient, msg) {
     send(adminClient.ws, { t: 'error', message: 'В соревновании нет ни одного участника' });
     return;
   }
+  const stationIds = [];
+  const hasStationSelection = Array.isArray(msg.stations);
+  const rawStations = hasStationSelection ? msg.stations : STATIONS;
+  for (const rawStation of rawStations) {
+    const id = sanitizeStation(rawStation);
+    if (id && stationIds.indexOf(id) < 0) stationIds.push(id);
+  }
+  stationIds.sort((a, b) => STATIONS.indexOf(a) - STATIONS.indexOf(b));
+  if (!stationIds.length) {
+    send(adminClient.ws, {
+      t: 'error',
+      code: 'comp_bad_stations',
+      message: 'Выберите хотя бы один компьютер для соревнования',
+    });
+    return;
+  }
+  if (students.length > 1 && stationIds.length < 2) {
+    send(adminClient.ws, {
+      t: 'error',
+      code: 'comp_bad_stations',
+      message: 'Для нескольких участников нужно минимум два компьютера',
+    });
+    return;
+  }
+  const heatSize = Math.max(1, Math.min(COMP_MAX, stationIds.length, students.length));
   const track = sanitizeRace(msg.track) || 'utt1';
   const className = sanitizeName(msg.className, 60) || 'Класс';
   const title = sanitizeName(msg.title, 60) || ('Соревнование · ' + className);
@@ -1071,6 +1130,8 @@ function compCreate(adminClient, msg) {
     adminId: adminClient.id,
     adminName: sanitizeName(msg.adminName, COMP_NAME_MAX) || adminClient.name,
     createdAt: Date.now(),
+    stationIds,
+    heatSize,
     students,
     rounds: [],
     currentHeatId: 0,

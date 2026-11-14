@@ -1637,12 +1637,13 @@ const NET_RELAY = NET_QS.has('lan') || NET_QS.has('relay') || location.protocol 
 const NET_ADMIN_KEY = NET_QS.get('admin') || '';
 const NET_AUTO_PAIR = NET_QS.has('pair') || NET_QS.get('join') === 'pair';
 const NET_AUTO_DIRECTOR = NET_QS.has('director') || NET_QS.get('join') === 'director';
-/* Компьютеры аудиторий 109/110/114 для соревнования. Сервер принимает
-   R109/R110/R114-01…99; в интерфейсе по умолчанию показаны 01…20 каждой комнаты. */
+/* Компьютеры аудиторий: 109 — 6 машин, 110 — 7, 114 — 24.
+   Метки: R109-01…06, R110-01…07, R114-01…24. */
 const STATION_ROOMS = ['109', '110', '114'];
+const STATION_ROOM_MAX = { '109': 6, '110': 7, '114': 24 };
 const STATION_CATALOG = [];
 for(const room of STATION_ROOMS){
-  for(let n = 1; n <= 20; n++) STATION_CATALOG.push('R' + room + '-' + String(n).padStart(2, '0'));
+  for(let n = 1; n <= STATION_ROOM_MAX[room]; n++) STATION_CATALOG.push('R' + room + '-' + String(n).padStart(2, '0'));
 }
 const COMP_STATIONS = STATION_CATALOG;
 const DEFAULT_STATIONS = ['R114-01', 'R114-02', 'R114-03', 'R114-17', 'R114-18', 'R114-19'];
@@ -1651,9 +1652,11 @@ function normalizeStation(id){
   const m = /^R(109|110|114)-(\d{1,2})$/i.exec(String(id == null ? '' : id).trim());
   if(!m) return '';
   const n = Number(m[2]);
-  if(!Number.isFinite(n) || n < 1 || n > 99) return '';
+  const max = STATION_ROOM_MAX[m[1]] || 0;
+  if(!Number.isFinite(n) || n < 1 || n > max) return '';
   return 'R' + m[1] + '-' + String(n).padStart(2, '0');
 }
+function stationRoomTitle(room){ return 'Аудитория ' + room + ' · ' + STATION_ROOM_MAX[room] + ' ПК'; }
 function isValidStation(id){ return !!normalizeStation(id); }
 function stationSortKeyApp(id){
   const m = /^R(109|110|114)-(\d{1,2})$/.exec(normalizeStation(id));
@@ -2451,8 +2454,8 @@ function renderCompSetup(){
     '<label class="cp-student"><input type="checkbox" data-station="' + escapeHtml(id) + '"' +
       (compSetup.stations.has(id) ? ' checked' : '') + '><span>' + escapeHtml(id) + '</span></label>';
   let stationRows = STATION_ROOMS.map(room => {
-    const ids = COMP_STATIONS.filter(id => id.indexOf('R' + room + '-') === 0);
-    return '<div class="cp-room"><div class="cp-room-title">Аудитория ' + room + '</div>' +
+    const ids = STATION_CATALOG.filter(id => id.indexOf('R' + room + '-') === 0);
+    return '<div class="cp-room"><div class="cp-room-title">' + stationRoomTitle(room) + '</div>' +
       '<div class="cp-station-grid">' + ids.map(stationCheckbox).join('') + '</div></div>';
   }).join('');
   const customStations = stationIds.filter(id => COMP_STATIONS.indexOf(id) < 0);
@@ -2492,8 +2495,7 @@ function renderCompSetup(){
       '<div class="cp-present-head"><b id="cpStSummary">Компьютеры: ' + stationIds.length + ' / 6</b>' +
         '<span><button type="button" class="net-mini" id="cpStNone">Сброс</button></span></div>' +
       '<div class="cp-students cp-stations" id="cpStations">' + stationRows + '</div>' +
-      '<div class="cp-custom-station"><input id="cpStationCustom" class="net-name" placeholder="Другая метка: R109-21"><button type="button" class="net-mini" id="cpStationAdd">Добавить</button></div>' +
-      '<p class="cp-hint">Выберите до 6 компьютеров из аудиторий 109, 110 и 114. Метки вида R109-01, R110-07, R114-17.</p>' +
+      '<p class="cp-hint">Выберите до 6 компьютеров: 109 — 6 ПК, 110 — 7 ПК, 114 — 24 ПК. Метки вида R109-01, R110-07, R114-17.</p>' +
       '<p class="cp-hint" id="cpHeatHint">' + escapeHtml(heatHint) + '</p>' +
       compSetupInstructions(compSetup.key, compSetup.relay) +
       (compSetup.launchUrl ? '<p class="cp-ok">Доска соревнования: <a href="' + escapeHtml(compSetup.launchUrl) + '" target="_blank" rel="noopener">открыть ещё раз</a></p>' : '') +
@@ -2554,25 +2556,6 @@ function renderCompSetup(){
     if(cb.checked) compSetup.stations.add(id); else compSetup.stations.delete(id);
     compSetupSummary();
     compSetupUpdateStationLinks();
-  });
-  const stationAdd = document.getElementById('cpStationAdd');
-  if(stationAdd) stationAdd.addEventListener('click', ()=>{
-    const input = document.getElementById('cpStationCustom');
-    const id = normalizeStation(input ? input.value : '');
-    if(!id){
-      compSetup.notice = 'Метка компьютера должна быть вида R109-01, R110-07 или R114-17.';
-      renderCompSetup();
-      return;
-    }
-    if(compSetup.stations.has(id)){ if(input) input.value = ''; return; }
-    if(compSetup.stations.size >= 6){
-      compSetup.notice = 'Можно выбрать не более 6 компьютеров.';
-      renderCompSetup();
-      return;
-    }
-    compSetup.stations.add(id);
-    compSetup.notice = '';
-    renderCompSetup();
   });
   const titleEl = document.getElementById('cpTitle');
   if(titleEl) titleEl.addEventListener('input', ()=>{ compSetup.title = titleEl.value.slice(0, 60); });
@@ -4557,17 +4540,12 @@ function compStationPickerHtml(c){
     '<label class="cp-student"><input type="checkbox" data-admin-station="' + escapeHtml(id) + '"' +
       (selected.has(id) ? ' checked' : '') + '><span>' + escapeHtml(id) + '</span></label>';
   let rows = STATION_ROOMS.map(room => {
-    const ids = COMP_STATIONS.filter(id => id.indexOf('R' + room + '-') === 0);
-    return '<div class="cp-room"><div class="cp-room-title">Аудитория ' + room + '</div>' +
+    const ids = STATION_CATALOG.filter(id => id.indexOf('R' + room + '-') === 0);
+    return '<div class="cp-room"><div class="cp-room-title">' + stationRoomTitle(room) + '</div>' +
       '<div class="cp-station-grid">' + ids.map(cb).join('') + '</div></div>';
   }).join('');
-  const custom = Array.from(selected).filter(id => COMP_STATIONS.indexOf(id) < 0);
-  rows += '<div class="cp-room"><div class="cp-room-title">Другие</div>' +
-    '<div class="cp-station-grid" id="cpAdminStationCustomList">' + custom.map(cb).join('') + '</div></div>';
   return '<details class="cp-details"><summary>Компьютеры для следующих заездов (' + selected.size + ' / 6)</summary>' +
     rows +
-    '<div class="cp-custom-station"><input id="cpAdminStationCustom" class="net-name" placeholder="Другая метка: R109-21">' +
-      '<button type="button" data-comp="add-admin-station">Добавить</button></div>' +
     '<div class="cp-foot"><button type="button" data-comp="save-stations">Применить компьютеры</button>' +
       '<button type="button" data-comp="clear-stations">Сброс</button></div>' +
     '<p class="cp-hint">Можно менять между заездами. Выберите до 6 ПК; для текущего заезда нужно не меньше его участников.</p>' +
@@ -5024,37 +5002,6 @@ function compAdminClick(e){
   }
   else if(action === 'clear-stations'){
     compPrepEl.querySelectorAll('input[data-admin-station]').forEach(cb => { cb.checked = false; });
-  }
-  else if(action === 'add-admin-station'){
-    const input = document.getElementById('cpAdminStationCustom');
-    const id = normalizeStation(input ? input.value : '');
-    if(!id){ compAdminNotice('Метка компьютера должна быть вида R109-01, R110-07 или R114-17.', false); return; }
-    const inputs = [...compPrepEl.querySelectorAll('input[data-admin-station]')];
-    const existingCb = inputs.find(cb => normalizeStation(cb.dataset.adminStation || cb.value) === id);
-    if(existingCb){
-      if(!existingCb.checked){
-        if(inputs.filter(cb => cb.checked).length >= 6){ compAdminNotice('Можно выбрать не более 6 компьютеров.', false); return; }
-        existingCb.checked = true;
-      }
-      if(input) input.value = '';
-      return;
-    }
-    const checked = inputs.filter(cb => cb.checked).length;
-    if(checked >= 6){ compAdminNotice('Можно выбрать не более 6 компьютеров.', false); return; }
-    const box = document.getElementById('cpAdminStationCustomList');
-    if(!box){ compAdminNotice('Не удалось добавить компьютер.', false); return; }
-    const label = document.createElement('label');
-    label.className = 'cp-student';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.checked = true;
-    cb.dataset.adminStation = id;
-    const span = document.createElement('span');
-    span.textContent = id;
-    label.appendChild(cb);
-    label.appendChild(span);
-    box.appendChild(label);
-    if(input) input.value = '';
   }
   else if(action === 'board'){ compBoardOpen = !compBoardOpen; compAdminRender(netRoom.comp, netRoom.compSelf); }
   else if(action === 'copy-links'){

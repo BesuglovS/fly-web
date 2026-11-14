@@ -707,8 +707,6 @@
   .cp-room{border:1px solid rgba(159,208,255,.12);border-radius:7px;padding:5px 7px;background:rgba(255,255,255,.018)}
   .cp-room-title{font-size:10px;letter-spacing:.4px;color:#9fd0ff;font-weight:700;margin-bottom:3px}
   .cp-station-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(88px,1fr));gap:2px 8px}
-  .cp-custom-station{display:flex;gap:6px;align-items:center;margin-top:4px}
-  .cp-custom-station input{flex:1;min-width:0}
   .cp-student{display:flex;gap:7px;align-items:center;font-size:12px;color:#dcebff;cursor:pointer;padding:2px 3px;border-radius:5px}
   .cp-student:hover{background:rgba(159,208,255,.08)}
   .cp-student input{accent-color:#2f8fff}
@@ -760,12 +758,6 @@
   .station-room-title{font-size:11px;letter-spacing:.5px;color:#9fd0ff;font-weight:700;margin-bottom:5px}
   .station-room .station-grid{grid-template-columns:repeat(auto-fit,minmax(52px,1fr));gap:5px;margin:0}
   .station-room .station-grid button{padding:8px 4px;font-size:14px}
-  .station-custom{display:flex;gap:8px;align-items:center;margin:10px 0}
-  .station-custom input{flex:1;min-width:0;background:#0e1622;color:#eaf6ff;border:1px solid rgba(159,208,255,.4);
-    border-radius:8px;padding:8px 10px;font-size:13px}
-  .station-custom input.bad{border-color:#ff5c4d;box-shadow:0 0 0 2px rgba(255,92,77,.18)}
-  .station-custom button{padding:8px 12px;border-radius:8px;cursor:pointer;background:rgba(159,208,255,.14);
-    border:1px solid rgba(159,208,255,.5);color:#eaf6ff;font-size:12px;font-weight:600}
   .station-grid button{padding:14px 10px;border-radius:10px;cursor:pointer;
     background:rgba(159,208,255,.1);border:1px solid rgba(159,208,255,.38);
     color:#dcebff;font-size:16px;font-weight:700;letter-spacing:.5px}

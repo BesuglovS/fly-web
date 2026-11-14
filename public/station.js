@@ -1,21 +1,21 @@
 'use strict';
 
 (function () {
+  /* Компьютеры аудиторий: 109 — 6 машин, 110 — 7, 114 — 24. */
   const ROOMS = ['109', '110', '114'];
-  const MAX_NUMBER = 20;
+  const ROOM_MAX = { '109': 6, '110': 7, '114': 24 };
   const KEY = 'fly-lan-station';
   const grid = document.getElementById('stationGrid');
   const currentEl = document.getElementById('stationCurrent');
   const openBtn = document.getElementById('stationOpen');
-  const customInput = document.getElementById('stationCustom');
-  const customBtn = document.getElementById('stationUseCustom');
   let selected = '';
 
   function normalizeStation(id) {
     const m = /^R(109|110|114)-(\d{1,2})$/i.exec(String(id == null ? '' : id).trim());
     if (!m) return '';
     const n = Number(m[2]);
-    if (!Number.isFinite(n) || n < 1 || n > 99) return '';
+    const max = ROOM_MAX[m[1]] || 0;
+    if (!Number.isFinite(n) || n < 1 || n > max) return '';
     return 'R' + m[1] + '-' + String(n).padStart(2, '0');
   }
 
@@ -36,7 +36,6 @@
     } else {
       try { localStorage.removeItem(KEY); } catch (_) {}
     }
-    if (customInput) customInput.value = '';
     render();
   }
 
@@ -53,10 +52,10 @@
     block.className = 'station-room';
     const title = document.createElement('div');
     title.className = 'station-room-title';
-    title.textContent = 'Аудитория ' + room;
+    title.textContent = 'Аудитория ' + room + ' · ' + ROOM_MAX[room] + ' ПК';
     const roomGrid = document.createElement('div');
     roomGrid.className = 'station-grid';
-    for (let n = 1; n <= MAX_NUMBER; n++) {
+    for (let n = 1; n <= ROOM_MAX[room]; n++) {
       const id = 'R' + room + '-' + String(n).padStart(2, '0');
       const b = document.createElement('button');
       b.type = 'button';
@@ -69,25 +68,6 @@
     block.appendChild(roomGrid);
     grid.appendChild(block);
   });
-
-  function useCustom() {
-    const id = normalizeStation(customInput ? customInput.value : '');
-    if (!id) {
-      if (customInput) {
-        customInput.focus();
-        customInput.classList.add('bad');
-        setTimeout(function () { customInput.classList.remove('bad'); }, 1200);
-      }
-      return;
-    }
-    select(id);
-  }
-  if (customBtn) customBtn.addEventListener('click', useCustom);
-  if (customInput) {
-    customInput.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') { e.preventDefault(); useCustom(); }
-    });
-  }
 
   openBtn.addEventListener('click', function () {
     if (!selected) return;

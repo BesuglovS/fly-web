@@ -54,9 +54,11 @@ const ST_RATE = 40;        // st-сообщений в секунду на кл�
 const CTRL_RATE = 30;      // прочих в секунду
 const PING_MS = 30000;
 
-/* Компьютеры класса R114: метка передаётся в ?station=... (без логина ученика). */
+/* Компьютеры аудиторий: метка передаётся в ?station=... (без логина ученика).
+   В аудитории 109 — 6 машин, в 110 — 7, в 114 — 24. */
 const STATIONS = ['R114-01', 'R114-02', 'R114-03', 'R114-17', 'R114-18', 'R114-19'];
 const STATION_ROOMS = ['109', '110', '114'];
+const STATION_ROOM_MAX = { '109': 6, '110': 7, '114': 24 };
 function stationSortKey(id) {
   const m = /^R(109|110|114)-(\d{1,2})$/.exec(String(id || ''));
   if (!m) return 99999;
@@ -144,7 +146,8 @@ function sanitizeStation(v) {
   const m = /^R(109|110|114)-(\d{1,2})$/.exec(s);
   if (!m) return '';
   const num = Number(m[2]);
-  if (!Number.isFinite(num) || num < 1 || num > 99) return '';
+  const max = STATION_ROOM_MAX[m[1]] || 0;
+  if (!Number.isFinite(num) || num < 1 || num > max) return '';
   return 'R' + m[1] + '-' + String(num).padStart(2, '0');
 }
 function allowedOptions(isAdmin) { return isAdmin ? MAX_OPTIONS : MAX_OPTIONS.filter((n) => n <= PUBLIC_MAX); }

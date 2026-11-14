@@ -2241,9 +2241,28 @@ function renderCompSetup(){
   compSetupInit();
   if(!compSetupOpen) return;
   netModalEl.classList.add('comp-setup');
-  if(!netIsAdminUser() || !authUser || !authUser.is_admin){
-    netStepsEl.innerHTML = '<p class="net-step">Соревнование класса доступно администратору после входа через портал.</p>' +
-      '<div class="gp-btns net-row"><button type="button" id="cpBack">← Назад</button></div>';
+  if(!authUser || !authUser.is_admin){
+    const msg = authUnavailable
+      ? 'Портал входа сейчас недоступен. Проверьте соединение и повторите.'
+      : (!authUser
+        ? 'Для создания соревнования войдите через портал под аккаунтом администратора.'
+        : 'Соревнование класса доступно только администратору (is_admin). Войдите под другим аккаунтом.');
+    netStepsEl.innerHTML = '<p class="net-step">' + escapeHtml(msg) + '</p>' +
+      '<p class="net-step">' + (!authUser || authUnavailable
+        ? '<a href="' + escapeHtml(authLoginUrl()) + '" rel="noopener">🔑 Войти через портал</a>'
+        : '') + '</p>' +
+      '<div class="gp-btns net-row">' +
+        '<button type="button" id="cpAuthRetry">🔄 Проверить вход</button>' +
+        '<button type="button" id="cpBack">← Назад</button>' +
+      '</div>';
+    const retry = document.getElementById('cpAuthRetry');
+    if(retry) retry.addEventListener('click', async ()=>{
+      authUnavailable = false;
+      authUser = await checkAuth();
+      renderAuth();
+      if(authUser && authUser.is_admin) compLoadClasses();
+      else renderCompSetup();
+    });
     const b = document.getElementById('cpBack'); if(b) b.addEventListener('click', ()=>{ compSetupOpen = false; renderNetBody(); });
     return;
   }
@@ -2285,7 +2304,8 @@ function renderCompSetup(){
     '<div class="cp-setup">' +
       '<div class="cp-setup-head"><div class="cp-kicker">СОРЕВНОВАНИЕ КЛАССА</div>' +
         '<p class="cp-muted">Выберите класс, отметьте присутствующих. Сервер построит турнирную сетку: заезды до 6 человек, затем финал. ' +
-        'Каждый заезд показывает администратору, за какой компьютер должен сесть ученик.</p></div>' +
+        'Каждый заезд показывает администратору, за какой компьютер должен сесть ученик.</p>' +
+        '<p class="cp-muted">Выбор класса работает без релея. Для заездов запустите relay по инструкции ниже и нажмите «Создать и открыть доску».</p></div>' +
       (compSetup.notice ? '<div class="cp-note err">' + escapeHtml(compSetup.notice) + '</div>' : '') +
       '<label class="cp-field">Класс<select id="cpGroup"><option value="">— выберите класс —</option>' + groupOptions + '</select></label>' +
       '<div class="cp-present-head"><b>Присутствуют: ' + selected + ' / ' + students.length + '</b>' +
@@ -2376,9 +2396,20 @@ async function compLoadClasses(){
   }
 }
 function openCompSetup(){
-  if(!netIsAdminUser()) return;
   compSetupOpen = true;
   compSetupInit();
+  if(!authUser || !authUser.is_admin){
+    renderCompSetup();
+    /* Если сессия ещё проверяется — дадим ей завершиться и перерисуем. */
+    if(!authUser && !authUnavailable){
+      initAuth().then(()=>{
+        if(!compSetupOpen) return;
+        if(authUser && authUser.is_admin) compLoadClasses();
+        else renderCompSetup();
+      });
+    }
+    return;
+  }
   if(!compSetup.loaded) compLoadClasses();
   else renderCompSetup();
 }
@@ -2443,6 +2474,7 @@ function renderNetBody(){
 }
 
 function renderLobby(){
+  if(compSetupOpen) return;   // не затираем мастер соревнования поллингом лобби
   const canStart = NET_RELAY ? relayReady : true;
   const rows = netRoom.lobbyRooms.map(r=>{
     const pair = !!(r.params && r.params.pair);
@@ -2782,7 +2814,7 @@ async function refreshLobby(){
     netRoom.lobbyRooms = data.rooms || [];
     if(data.isAdmin != null) netRoom.isAdmin = !!data.isAdmin;
     if(Array.isArray(data.maps) && data.maps.length) netRoom.maps = data.maps;
-    if(!netRoom.active) renderLobby();
+    if(!netRoom.active && !compSetupOpen) renderLobby();
   }catch(_){}
 }
 

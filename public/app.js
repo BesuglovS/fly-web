@@ -2188,6 +2188,8 @@ const compSetup = {
   initializedSelection: false,
   title: '',
   track: 'utt1',
+  format: 'heats',
+  rounds: 3,
   key: '',
   relay: '',
   launchUrl: '',
@@ -2196,6 +2198,26 @@ const compSetup = {
 };
 function compGenKey(){
   return 'fly-' + Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 6);
+}
+/* Форматы турнира: подписи для интерфейса (значения — как в relay/server.js). */
+const COMP_FORMAT_LABELS = {
+  heats: 'Заезды с отбором',
+  olympic: 'Олимпийская сетка 1×1',
+  points: 'Накопление очков',
+};
+function compFormatName(format){ return COMP_FORMAT_LABELS[format] || COMP_FORMAT_LABELS.heats; }
+function compFormatOptionsHtml(current){
+  const cur = COMP_FORMAT_LABELS[current] ? current : 'heats';
+  return Object.keys(COMP_FORMAT_LABELS).map(k =>
+    '<option value="' + k + '"' + (k === cur ? ' selected' : '') + '>' + escapeHtml(COMP_FORMAT_LABELS[k]) + '</option>').join('');
+}
+function compRoundsOptionsHtml(current){
+  const cur = Math.max(1, Math.min(8, Number(current) || 3));
+  let out = '';
+  for(let n = 1; n <= 8; n++){
+    out += '<option value="' + n + '"' + (n === cur ? ' selected' : '') + '>' + n + '</option>';
+  }
+  return out;
 }
 function compSetupInit(){
   if(!compSetup.key){
@@ -2336,10 +2358,24 @@ function compSetupInstructions(key, relay){
   '</div>';
 }
 function compSetupHeatText(selected, stationCount){
+  const format = compSetup.format || 'heats';
   if(!stationCount) return 'Выберите хотя бы один компьютер.';
   if(!selected) return 'Отметьте участников.';
-  if(selected > 1 && stationCount < 2) return 'Для нескольких участников нужно минимум два компьютера.';
+  if(format === 'olympic'){
+    if(selected < 2) return 'Для олимпийской сетки нужно минимум два участника.';
+    if(stationCount < 2) return 'Для олимпийской сетки нужно минимум два компьютера.';
+    const rounds = Math.max(1, Math.ceil(Math.log2(selected)));
+    const byes = Math.pow(2, rounds) > selected
+      ? ' Участники без соперника проходят раунд без гонки.' : '';
+    const bronze = selected >= 3 ? ', плюс матч за 3-е место' : '';
+    return 'Олимпийская сетка 1×1: в каждом заезде двое, победитель идёт дальше. Раундов: ' + rounds + bronze + '.' + byes;
+  }
   const heat = Math.max(1, Math.min(6, stationCount, selected));
+  if(format === 'points'){
+    const rounds = Math.max(1, Math.min(8, Number(compSetup.rounds) || 3));
+    return 'Накопление очков: ' + rounds + ' раунд(ов), в каждом летают все участники. В заезде — до ' + heat + ' чел.';
+  }
+  if(selected > 1 && stationCount < 2) return 'Для нескольких участников нужно минимум два компьютера.';
   return 'В одном заезде — до ' + heat + ' чел. (компьютеров: ' + stationCount + ', участников: ' + selected + ').';
 }
 function compSetupBreakdownText(){
@@ -2474,13 +2510,17 @@ function renderCompSetup(){
     '<div class="cp-setup">' +
       '<div class="cp-setup-head"><div class="cp-kicker">СОРЕВНОВАНИЕ</div>' +
         '<p class="cp-muted">Выберите класс и отметьте участников. Можно переключить класс и добавить участников из нескольких классов. ' +
-        'Сервер построит турнирную сетку: заезды до 6 человек, затем финал.</p>' +
+        'Формат турнира: заезды с отбором, олимпийская сетка 1×1 или накопление очков за несколько раундов.</p>' +
         '<p class="cp-muted">Выбор класса работает без релея. Для заездов запустите relay по инструкции ниже и нажмите «Создать и открыть доску».</p></div>' +
       (compSetup.notice ? '<div class="cp-note err">' + escapeHtml(compSetup.notice) + '</div>' : '') +
       '<label class="cp-field">Класс<select id="cpGroup"><option value="">— выберите класс —</option>' + groupOptions + '</select></label>' +
       '<div class="cp-setup-grid">' +
         '<label class="cp-field">Участников из класса<select id="cpCount">' + countOptions + '</select></label>' +
         '<label class="cp-field">Название<input id="cpTitle" class="net-name" maxlength="60" value="' + escapeHtml(compSetup.title) + '"></label>' +
+        '<label class="cp-field">Формат<select id="cpFormat">' + compFormatOptionsHtml(compSetup.format) + '</select></label>' +
+        (compSetup.format === 'points'
+          ? '<label class="cp-field">Раундов (все летают в каждом)<select id="cpRounds">' + compRoundsOptionsHtml(compSetup.rounds) + '</select></label>'
+          : '') +
         '<label class="cp-field">Трасса<select id="cpTrackSel">' + compRaceOptionsHtml({ track: compSetup.track }) + '</select></label>' +
         '<label class="cp-field">Адрес релея<input id="cpRelayAddr" class="net-name" value="' + escapeHtml(compSetup.relay) + '" placeholder="' + NET_RELAY_DEFAULT + '"></label>' +
         '<label class="cp-field">Ключ ADMIN_KEY<input id="cpAdminKey" class="net-name" value="' + escapeHtml(compSetup.key) + '"></label>' +
@@ -2509,6 +2549,17 @@ function renderCompSetup(){
   document.getElementById('cpBack').addEventListener('click', ()=>{ compSetupOpen = false; renderNetBody(); });
   document.getElementById('cpReload').addEventListener('click', compLoadClasses);
   document.getElementById('cpGroup').addEventListener('change', e => compSetupSelectGroup(e.target.value));
+  const fmtEl = document.getElementById('cpFormat');
+  if(fmtEl) fmtEl.addEventListener('change', ()=>{
+    compSetup.format = COMP_FORMAT_LABELS[fmtEl.value] ? fmtEl.value : 'heats';
+    compSetup.notice = '';
+    renderCompSetup();
+  });
+  const roundsEl = document.getElementById('cpRounds');
+  if(roundsEl) roundsEl.addEventListener('change', ()=>{
+    compSetup.rounds = Math.max(1, Math.min(8, Number(roundsEl.value) || 3));
+    compSetupSummary();
+  });
   document.getElementById('cpAll').addEventListener('click', ()=>{
     for(const s of compSetupStudents()){
       compSetupSetParticipant(s.id, true, { groupId: s.groupId, className: s.className });
@@ -2635,6 +2686,11 @@ function compCreateFromSite(){
     renderCompSetup();
     return;
   }
+  if((compSetup.format || 'heats') === 'olympic' && students.length < 2){
+    compSetup.notice = 'Для олимпийской сетки нужно минимум два участника.';
+    renderCompSetup();
+    return;
+  }
   if(!stations.length){
     compSetup.notice = 'Выберите хотя бы один компьютер для соревнования.';
     renderCompSetup();
@@ -2670,6 +2726,8 @@ function compCreateFromSite(){
     classId,
     className: groupName.slice(0, 60),
     track: compSetup.track,
+    format: compSetup.format || 'heats',
+    rounds: Math.max(1, Math.min(8, Number(compSetup.rounds) || 3)),
     adminName: (authUser && (authUser.display_name || authUser.login)) || 'Учитель',
     stations: stations,
     students: students.map(s => ({ id: s.id, name: s.name })),
@@ -4716,7 +4774,7 @@ function compAdminRender(c, self){
   compPrepEl.innerHTML = '<div class="cp-card">' +
     '<div class="cp-head"><div><div class="cp-kicker">СОРЕВНОВАНИЕ</div>' +
       '<h2>' + escapeHtml(c.title || 'Турнир') + '</h2>' +
-      '<div class="cp-sub">' + escapeHtml(c.className || 'Класс') + ' · ' + escapeHtml(compTrackName(c.track)) + ' · ' + phaseLabel + '</div></div>' +
+      '<div class="cp-sub">' + escapeHtml(c.className || 'Класс') + ' · ' + escapeHtml(compFormatName(c.format)) + ' · ' + escapeHtml(compTrackName(c.track)) + ' · ' + phaseLabel + '</div></div>' +
       (running ? '<button type="button" class="cp-x" data-comp="board" title="Свернуть доску">✕</button>' : '') + '</div>' +
     (compNotice ? '<div class="cp-note ' + (compNoticeOk ? 'ok' : 'err') + '">' + escapeHtml(compNotice) + '</div>' : '') +
     body +

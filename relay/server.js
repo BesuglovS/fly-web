@@ -68,6 +68,23 @@ const COMP_MAX = 6;                 // одновременно в заезде
 const COMP_STUDENTS_MAX = 64;       // предохранитель для класса
 const COMP_COUNTDOWN_MS = 5000;     // общий отсчёт до старта
 const COMP_NAME_MAX = 60;
+/* Форматы турнира:
+   heats   — отборочные заезды с проходом лучших (режим по умолчанию);
+   olympic — олимпийская сетка 1×1: в каждом заезде двое, проходит победитель;
+   points  — накопление очков: заданное число раундов, все летают в каждом. */
+const COMP_FORMATS = ['heats', 'olympic', 'points'];
+const COMP_ROUNDS_MIN = 1;
+const COMP_ROUNDS_MAX = 12;
+const COMP_ROUNDS_DEFAULT = 3;
+function sanitizeCompFormat(v) {
+  const s = String(v == null ? '' : v).trim().toLowerCase();
+  return COMP_FORMATS.includes(s) ? s : 'heats';
+}
+function sanitizeCompRounds(v) {
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n)) return COMP_ROUNDS_DEFAULT;
+  return Math.max(COMP_ROUNDS_MIN, Math.min(COMP_ROUNDS_MAX, n));
+}
 const COMP_TIMEOUT = {             // страховка на случай «зависшего» заезда
   utt1: 130000, utt2: 110000, utt5: 120000, utt4: 120000, forest: 330000,
 };
@@ -193,6 +210,8 @@ function compStateSnapshot() {
       className: comp.className,
       track: comp.track,
       mode: comp.mode,
+      format: comp.format || 'heats',
+      roundCount: Number(comp.roundCount) || 0,
       adminName: comp.adminName,
       createdAt: comp.createdAt,
       stationIds: (comp.stationIds || STATIONS).slice(),
@@ -221,6 +240,7 @@ function compStateSnapshot() {
           status: h.status,
           assignments: h.assignments ? Object.assign({}, h.assignments) : null,
           qualifiers: h.qualifiers.slice(),
+          kind: String(h.kind || ''),
           skipped: !!h.skipped,
           finishedAt: Number(h.finishedAt) || 0,
           finishReason: String(h.finishReason || ''),
@@ -344,6 +364,7 @@ function compRestoreState() {
         assignments,
         qualifiers,
         startToken: '',
+        kind: sanitizeName(h.kind, 20),
         skipped: !!h.skipped,
         finishedAt: Number(h.finishedAt) || 0,
         finishReason: sanitizeName(h.finishReason, 40),
@@ -381,6 +402,8 @@ function compRestoreState() {
     className: sanitizeName(saved.className, 60) || 'Класс',
     track: sanitizeRace(saved.track) || 'utt1',
     mode: sanitizeMode(saved.mode),
+    format: sanitizeCompFormat(saved.format),
+    roundCount: sanitizeCompRounds(saved.roundCount),
     adminId: 0,
     adminName: sanitizeName(saved.adminName, COMP_NAME_MAX) || 'Учитель',
     createdAt: Number(saved.createdAt) || Date.now(),
@@ -401,7 +424,7 @@ function compRestoreState() {
     heatTimer: null,
   };
   compHeatSeq = Math.max(compHeatSeq, maxHeatId);
-  compFillSources();
+  compResolveAdvances();
   compSkipEmptyLaterHeats();
 
   /* Прерванный заезд нельзя честно продолжить после перезапуска релея. */
@@ -546,6 +569,7 @@ function compNewHeat(round, index, participants, sources) {
     label: 'Заезд ' + number,
     participants: participants.slice(),
     sources: (sources || []).slice(),
+    kind: '',
     results: [],
     live: {},
     status: 'pending',
@@ -555,8 +579,9 @@ function compNewHeat(round, index, participants, sources) {
     finishReason: '',
   };
 }
-/* Сетка: отборочные заезды по 6, затем финал; каждый выбывший получает место. */
-function compBuildBracket(students) {
+/* Сетка «заезды с отбором»: группы по heatSize, из каждого проходит
+   floor(heatSize / число заездов) лучших; каждый выбывший получает место. */
+function compBuildHeats(students) {
   compHeatSeq = 0;
   const ids = students.map((s) => s.id);
   let cap = Math.max(1, Math.min(COMP_MAX, Number(comp && comp.heatSize) || COMP_MAX));
@@ -590,14 +615,100 @@ function compBuildBracket(students) {
   }
   return { rounds, heats: rounds.flatMap((r) => r.heats) };
 }
-/* Заполнить участников следующего раунда по результатам source-заездов. */
-function compFillSources() {
-  if (!comp) return;
+/* Название раунда олимпийской сетки по числу заездов в нём. */
+function compOlympicRoundName(heatsCount, round) {
+  if (heatsCount <= 1) return 'Финал';
+  if (heatsCount === 2) return '1/2 финала';
+  if (heatsCount === 4) return '1/4 финала';
+  if (heatsCount === 8) return '1/8 финала';
+  return 'Раунд ' + (round || 1);
+}
+/* Олимпийская сетка 1×1: в заезде двое, дальше идёт только победитель.
+   При нечётном числе участников один проходит без гонки (bye). */
+function compBuildOlympic(students) {
+  compHeatSeq = 0;
+  const ids = students.map((s) => s.id);
+  const rounds = [];
+  let prev = [];
+  for (let i = 0; i < ids.length; i += 2) {
+    prev.push(compNewHeat(1, prev.length + 1, ids.slice(i, i + 2), []));
+  }
+  if (!prev.length) return { rounds: [], heats: [] };
+  rounds.push({ index: 1, name: compOlympicRoundName(prev.length, 1), heats: prev });
+  let round = 1;
+  while (prev.length > 1) {
+    round++;
+    const next = [];
+    for (let i = 0; i < prev.length; i += 2) {
+      const srcs = [{ heatId: prev[i].id, place: 1 }];
+      if (prev[i + 1]) srcs.push({ heatId: prev[i + 1].id, place: 1 });
+      next.push(compNewHeat(round, next.length + 1, [], srcs));
+    }
+    rounds.push({ index: round, name: compOlympicRoundName(next.length, round), heats: next });
+    prev = next;
+  }
+  /* Матч за 3-е место: между проигравшими полуфиналов, перед финалом. */
+  if (rounds.length >= 2) {
+    const finalRound = rounds[rounds.length - 1];
+    const semiRound = rounds[rounds.length - 2];
+    if (finalRound.heats.length === 1 && semiRound.heats.length === 2) {
+      const bronze = compNewHeat(semiRound.index + 1, 1, [], [
+        { heatId: semiRound.heats[0].id, place: 2 },
+        { heatId: semiRound.heats[1].id, place: 2 },
+      ]);
+      bronze.kind = 'bronze';
+      bronze.label = 'Заезд за 3-е место';
+      finalRound.index += 1;
+      finalRound.heats[0].round = finalRound.index;
+      finalRound.heats[0].kind = 'final';
+      finalRound.heats[0].label = 'Финал';
+      rounds.splice(rounds.length - 1, 0, {
+        index: bronze.round,
+        name: 'За 3-е место',
+        heats: [bronze],
+      });
+    }
+  }
+  return { rounds, heats: rounds.flatMap((r) => r.heats) };
+}
+function compRotate(arr, shift) {
+  const n = arr.length;
+  if (!n) return [];
+  const k = ((shift % n) + n) % n;
+  return arr.slice(k).concat(arr.slice(0, k));
+}
+/* Накопление очков: заданное число раундов, в каждом летают все участники;
+   группы сдвигаются, чтобы соперники менялись. */
+function compBuildPoints(students) {
+  compHeatSeq = 0;
+  const cap = Math.max(2, Math.min(COMP_MAX, Number(comp && comp.heatSize) || COMP_MAX));
+  const roundCount = Math.max(COMP_ROUNDS_MIN,
+    Math.min(COMP_ROUNDS_MAX, Number(comp && comp.roundCount) || COMP_ROUNDS_DEFAULT));
+  const ids = students.map((s) => s.id);
+  const rounds = [];
+  for (let r = 1; r <= roundCount; r++) {
+    const order = compRotate(ids, (r - 1) * cap);
+    const heats = compChunk(order, cap).map((parts, i) => compNewHeat(r, i + 1, parts, []));
+    rounds.push({ index: r, name: roundCount > 1 ? ('Раунд ' + r) : 'Заезды', heats });
+  }
+  return { rounds, heats: rounds.flatMap((x) => x.heats) };
+}
+function compBuildBracket(students) {
+  const format = (comp && comp.format) || 'heats';
+  if (format === 'olympic') return compBuildOlympic(students);
+  if (format === 'points') return compBuildPoints(students);
+  return compBuildHeats(students);
+}
+/* Заполнить участников следующего раунда по результатам source-заездов.
+   Возвращает true, если состав какого-то заезда изменился. */
+function compFillSourcesOnce() {
+  if (!comp) return false;
+  let changed = false;
   for (const heat of compAllHeats()) {
     if (!heat.sources.length) continue;
     const sourceHeats = heat.sources.map((s) => compFindHeat(s.heatId));
     if (!sourceHeats.every((h) => h && h.status === 'done')) {
-      heat.participants = [];
+      if (heat.participants.length) { heat.participants = []; changed = true; }
       continue;
     }
     const parts = [];
@@ -606,7 +717,36 @@ function compFillSources() {
       const res = sh && sh.results.find((r) => r.place === src.place);
       if (res && !res.failed) parts.push(res.sid);
     }
-    heat.participants = parts;
+    if (parts.join(',') !== heat.participants.join(',')) {
+      heat.participants = parts;
+      changed = true;
+    }
+  }
+  return changed;
+}
+/* Олимпийская сетка: если в заезде остался один участник — он проходит без гонки. */
+function compAutoFinishByes() {
+  if (!comp || (comp.format || 'heats') !== 'olympic') return false;
+  let changed = false;
+  for (const heat of compAllHeats()) {
+    if (heat.status !== 'pending' || heat.participants.length !== 1) continue;
+    const sid = heat.participants[0];
+    heat.status = 'done';
+    heat.finishedAt = Date.now();
+    heat.finishReason = 'bye';
+    heat.results = [{ sid, place: 1, fin: null, time: 0, prog: 0, done: true, failed: false }];
+    heat.qualifiers = [sid];
+    changed = true;
+  }
+  return changed;
+}
+/* Досчитать проходы и bye-заезды до устойчивого состояния. */
+function compResolveAdvances() {
+  if (!comp) return;
+  for (let guard = 0; guard < 100; guard++) {
+    const filled = compFillSourcesOnce();
+    const byes = compAutoFinishByes();
+    if (!filled && !byes) break;
   }
 }
 function compNextPendingHeat() {
@@ -703,7 +843,58 @@ function compClientActive(client, room) {
   return !!(comp && comp.activeHeatId && room && client.roomId === room.id
     && client.compHeatId === comp.activeHeatId && client.compSid);
 }
+/* Очки в режиме накопления: фиксированная таблица по месту в заезде,
+   чтобы нечётные по размеру заезды не давали преимущества. */
+const COMP_POINTS = [25, 22, 20, 18, 16, 15];
+function compPointsForPlace(place) {
+  const p = Math.max(1, Math.round(Number(place) || 99));
+  return COMP_POINTS[p - 1] != null ? COMP_POINTS[p - 1] : 10;
+}
+function compPointsStandings() {
+  if (!comp) return [];
+  const totals = new Map();
+  for (const heat of compAllHeats()) {
+    if (heat.status !== 'done') continue;
+    for (const r of heat.results) {
+      const t = totals.get(r.sid) || { points: 0, time: 0, races: 0, wins: 0, dnf: 0 };
+      t.races += 1;
+      if (r.failed) {
+        t.dnf += 1;
+      } else {
+        t.points += compPointsForPlace(r.place);
+        if (r.fin != null) t.time += Number(r.fin) || 0;
+        if (Number(r.place) === 1) t.wins += 1;
+      }
+      totals.set(r.sid, t);
+    }
+  }
+  const rows = comp.students.map((s) => {
+    const t = totals.get(s.id) || { points: 0, time: 0, races: 0, wins: 0, dnf: 0 };
+    return {
+      sid: s.id,
+      name: s.name,
+      status: 'points',
+      note: t.points + ' очк.',
+      points: t.points,
+      time: t.time,
+      races: t.races,
+      wins: t.wins,
+      dnf: t.dnf,
+      fin: null,
+    };
+  });
+  rows.sort((a, b) => (b.points - a.points)
+    || (a.dnf - b.dnf)
+    || (a.time - b.time)
+    || a.name.localeCompare(b.name, 'ru'));
+  return rows.map((r, i) => Object.assign(r, { place: i + 1 }));
+}
 function compStandings() {
+  if (!comp) return [];
+  if ((comp.format || 'heats') === 'points') return compPointsStandings();
+  return compElimStandings();
+}
+function compElimStandings() {
   if (!comp) return [];
   const finalRound = comp.rounds[comp.rounds.length - 1];
   const finalHeat = finalRound && finalRound.heats[0];
@@ -778,10 +969,18 @@ function compStandings() {
     }
 
     if (last) {
+      const bronze = last.heat.kind === 'bronze';
+      const olympic = (comp.format || 'heats') === 'olympic';
+      const roundMeta = comp.rounds.find((r) => r.heats.some((h) => h.id === last.heat.id));
+      const roundName = olympic
+        ? ((roundMeta && roundMeta.name) || ('раунд ' + last.heat.round))
+        : (last.heat.round === 1 ? 'отбор' : ('раунд ' + last.heat.round));
       rows.push({
         sid, name,
         status: 'out',
-        note: 'выбыл · ' + (last.heat.round === 1 ? 'отбор' : ('раунд ' + last.heat.round)) + ' · ' + last.result.place + '-е',
+        note: bronze
+          ? (last.result.place === 1 ? '3-е место' : '4-е место')
+          : ('выбыл · ' + roundName + ' · ' + last.result.place + '-е'),
         fin: last.result.fin,
         time: last.result.time,
         prog: last.result.prog,
@@ -825,6 +1024,7 @@ function compHeatPublic(heat) {
     round: heat.round,
     index: heat.index,
     label: heat.label,
+    kind: heat.kind || '',
     status: heat.status,
     participants: heat.participants.slice(),
     sources: heat.sources.map((s) => ({ heatId: s.heatId, place: s.place })),
@@ -858,6 +1058,8 @@ function compPublic() {
     className: comp.className,
     track: comp.track,
     mode: comp.mode,
+    format: comp.format || 'heats',
+    roundCount: Number(comp.roundCount) || 0,
     phase: comp.phase,
     capacity: COMP_MAX,
     heatSize: Number(comp.heatSize) || COMP_MAX,
@@ -1135,6 +1337,18 @@ function compCreate(adminClient, msg) {
     return;
   }
   const heatSize = Math.max(1, Math.min(COMP_MAX, stationIds.length, students.length));
+  const format = sanitizeCompFormat(msg.format);
+  const roundCount = format === 'points'
+    ? sanitizeCompRounds(msg.rounds != null ? msg.rounds : msg.roundCount)
+    : 0;
+  if (format === 'olympic' && students.length < 2) {
+    send(adminClient.ws, {
+      t: 'error',
+      code: 'comp_bad_format',
+      message: 'Для олимпийской сетки нужно минимум два участника',
+    });
+    return;
+  }
   const track = sanitizeRace(msg.track) || 'utt1';
   const className = sanitizeName(msg.className, 60) || 'Класс';
   const title = sanitizeName(msg.title, 60) || ('Соревнование · ' + className);
@@ -1148,6 +1362,8 @@ function compCreate(adminClient, msg) {
     className,
     track,
     mode: 'angle',
+    format,
+    roundCount,
     adminId: adminClient.id,
     adminName: sanitizeName(msg.adminName, COMP_NAME_MAX) || adminClient.name,
     createdAt: Date.now(),
@@ -1168,6 +1384,11 @@ function compCreate(adminClient, msg) {
   };
   const bracket = compBuildBracket(students);
   comp.rounds = bracket.rounds;
+  compResolveAdvances();
+  if (!compAllHeats().some((h) => h.status === 'pending')
+    && !compAllHeats().some((h) => h.status === 'running')) {
+    comp.phase = 'finished';
+  }
 
   const room = newRoom(adminClient, title, DIRECTOR_MAX, false, true);
   room.params = { mode: 'angle', director: true, competition: true, racersMax: COMP_MAX, race: track };
@@ -1205,7 +1426,7 @@ function compStartHeat(adminClient) {
     send(adminClient.ws, { t: 'error', message: 'Нет подготовленного заезда' });
     return;
   }
-  compFillSources();
+  compResolveAdvances();
   if (!heat.participants.length) {
     send(adminClient.ws, { t: 'error', message: 'В заезде нет участников' });
     return;
@@ -1306,14 +1527,24 @@ function compFinalizeHeat(heat, reason) {
   heat.finishedAt = Date.now();
   heat.finishReason = reason || '';
 
-  const round = comp.rounds.find((r) => r.heats.includes(heat));
-  const nextRound = round ? comp.rounds[round.index] : null;
-  if (nextRound) {
-    const cap = Math.max(1, Math.min(COMP_MAX, Number(comp.heatSize) || COMP_MAX));
-    const q = Math.max(1, Math.floor(cap / round.heats.length));
-    heat.qualifiers = rows.filter((r) => !r.failed && r.place <= q).map((r) => r.sid);
+  const format = comp.format || 'heats';
+  if (format === 'olympic') {
+    /* В олимпийской сетке дальше идёт только победитель заезда. */
+    const winner = rows.find((r) => !r.failed && r.place === 1);
+    heat.qualifiers = winner ? [winner.sid] : [];
+  } else if (format === 'points') {
+    /* Накопление очков: выбывших нет, каждый летает все раунды. */
+    heat.qualifiers = rows.filter((r) => !r.failed).map((r) => r.sid);
   } else {
-    heat.qualifiers = rows.map((r) => r.sid);
+    const round = comp.rounds.find((r) => r.heats.includes(heat));
+    const nextRound = round ? comp.rounds[round.index] : null;
+    if (nextRound) {
+      const cap = Math.max(1, Math.min(COMP_MAX, Number(comp.heatSize) || COMP_MAX));
+      const q = Math.max(1, Math.floor(cap / round.heats.length));
+      heat.qualifiers = rows.filter((r) => !r.failed && r.place <= q).map((r) => r.sid);
+    } else {
+      heat.qualifiers = rows.map((r) => r.sid);
+    }
   }
 
   comp.activeHeatId = 0;
@@ -1322,7 +1553,7 @@ function compFinalizeHeat(heat, reason) {
   comp.startAt = 0;
   comp.startsIn = 0;
   compClearClientAssignments();
-  compFillSources();
+  compResolveAdvances();
   compSkipEmptyLaterHeats();
   const next = compNextPendingHeat();
   comp.nextHeatId = next ? next.id : 0;

@@ -2188,6 +2188,7 @@ const compSetup = {
   initializedSelection: false,
   title: '',
   track: 'utt1',
+  mode: 'angle',
   format: 'heats',
   rounds: 3,
   key: '',
@@ -2218,6 +2219,14 @@ function compRoundsOptionsHtml(current){
     out += '<option value="' + n + '"' + (n === cur ? ' selected' : '') + '>' + n + '</option>';
   }
   return out;
+}
+/* Режим полёта: Angle (автостабилизация) или Acro (ручной). */
+const COMP_MODE_LABELS = { angle: 'Angle — автостабилизация', acro: 'Acro — ручной' };
+function compModeName(mode){ return mode === 'acro' ? 'Acro' : 'Angle'; }
+function compModeOptionsHtml(current){
+  const cur = current === 'acro' ? 'acro' : 'angle';
+  return Object.keys(COMP_MODE_LABELS).map(k =>
+    '<option value="' + k + '"' + (k === cur ? ' selected' : '') + '>' + escapeHtml(COMP_MODE_LABELS[k]) + '</option>').join('');
 }
 function compSetupInit(){
   if(!compSetup.key){
@@ -2522,6 +2531,7 @@ function renderCompSetup(){
           ? '<label class="cp-field">Раундов (все летают в каждом)<select id="cpRounds">' + compRoundsOptionsHtml(compSetup.rounds) + '</select></label>'
           : '') +
         '<label class="cp-field">Трасса<select id="cpTrackSel">' + compRaceOptionsHtml({ track: compSetup.track }) + '</select></label>' +
+        '<label class="cp-field">Режим полёта<select id="cpMode">' + compModeOptionsHtml(compSetup.mode) + '</select></label>' +
         '<label class="cp-field">Адрес релея<input id="cpRelayAddr" class="net-name" value="' + escapeHtml(compSetup.relay) + '" placeholder="' + NET_RELAY_DEFAULT + '"></label>' +
         '<label class="cp-field">Ключ ADMIN_KEY<input id="cpAdminKey" class="net-name" value="' + escapeHtml(compSetup.key) + '"></label>' +
       '</div>' +
@@ -2559,6 +2569,10 @@ function renderCompSetup(){
   if(roundsEl) roundsEl.addEventListener('change', ()=>{
     compSetup.rounds = Math.max(1, Math.min(8, Number(roundsEl.value) || 3));
     compSetupSummary();
+  });
+  const modeEl = document.getElementById('cpMode');
+  if(modeEl) modeEl.addEventListener('change', ()=>{
+    compSetup.mode = modeEl.value === 'acro' ? 'acro' : 'angle';
   });
   document.getElementById('cpAll').addEventListener('click', ()=>{
     for(const s of compSetupStudents()){
@@ -2726,6 +2740,7 @@ function compCreateFromSite(){
     classId,
     className: groupName.slice(0, 60),
     track: compSetup.track,
+    mode: compSetup.mode === 'acro' ? 'acro' : 'angle',
     format: compSetup.format || 'heats',
     rounds: Math.max(1, Math.min(8, Number(compSetup.rounds) || 3)),
     adminName: (authUser && (authUser.display_name || authUser.login)) || 'Учитель',
@@ -4774,7 +4789,7 @@ function compAdminRender(c, self){
   compPrepEl.innerHTML = '<div class="cp-card">' +
     '<div class="cp-head"><div><div class="cp-kicker">СОРЕВНОВАНИЕ</div>' +
       '<h2>' + escapeHtml(c.title || 'Турнир') + '</h2>' +
-      '<div class="cp-sub">' + escapeHtml(c.className || 'Класс') + ' · ' + escapeHtml(compFormatName(c.format)) + ' · ' + escapeHtml(compTrackName(c.track)) + ' · ' + phaseLabel + '</div></div>' +
+      '<div class="cp-sub">' + escapeHtml(c.className || 'Класс') + ' · ' + escapeHtml(compFormatName(c.format)) + ' · ' + escapeHtml(compTrackName(c.track)) + ' · ' + escapeHtml(compModeName(c.mode)) + ' · ' + phaseLabel + '</div></div>' +
       (running ? '<button type="button" class="cp-x" data-comp="board" title="Свернуть доску">✕</button>' : '') + '</div>' +
     (compNotice ? '<div class="cp-note ' + (compNoticeOk ? 'ok' : 'err') + '">' + escapeHtml(compNotice) + '</div>' : '') +
     body +

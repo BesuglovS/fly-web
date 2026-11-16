@@ -119,12 +119,13 @@ relay/
 - `quick` — быстрая игра (в первую неполную или новая; парные комнаты пропускаются);
 - `control{map,mode,started,max,title,race?}` — управление (только хост);
   `race` — ID трассы (`utt1/utt2/utt5/utt4/forest`);
-- `comp_create{title,classId,className,track,adminName,students[],stations[],format?,rounds?}` —
+- `comp_create{title,classId,className,track,adminName,students[],stations[],format?,rounds?,mode?}` —
   создать соревнование (только администратор); `students` — участники из одного
   или нескольких классов, `stations` — выбранные компьютеры из аудиторий
   109/110/114 (`R109-01…06`, `R110-01…07`, `R114-01…24`, до 6; если не переданы —
   шесть R114 по умолчанию). `format` — `heats` (по умолчанию) / `olympic` /
-  `points`, `rounds` — число раундов для `points` (1…12, по умолчанию 3).
+  `points`, `rounds` — число раундов для `points` (1…12, по умолчанию 3),
+  `mode` — режим полёта `angle` (по умолчанию) или `acro`.
   Размер заезда сервер считает как min(6, число компьютеров, число участников);
 - `comp_sync` — запросить текущее состояние турнира;
 - `comp_start` / `comp_finish` / `comp_next` — старт заезда, досрочное завершение,

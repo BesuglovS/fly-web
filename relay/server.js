@@ -1499,7 +1499,7 @@ function compCreate(adminClient, msg) {
     classId,
     className,
     track,
-    mode: 'angle',
+    mode: sanitizeMode(msg.mode),
     format,
     roundCount,
     adminId: adminClient.id,

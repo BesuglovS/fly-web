@@ -315,7 +315,10 @@ AGENTS.md               # этот файл
    `self.allowed=false`. В `app.js` это `compOnState()`:
    админ — `#compAdmin`/`#compPrep` + директор-наблюдатель, ученик —
    `#compStation`/`#compLive`; `compBeginHeat()` грузит трассу и запускает
-   общий отсчёт, `compLocalFinish()` завершает заезд. `applyNetGame` для
+   общий отсчёт, `compLocalFinish()` завершает заезд. По завершении турнира
+   (`phase='finished'`) каждый компьютер-станция показывает итоговый экран
+   `compFinalHtml()`: место участника, таблицу положения и все результаты
+   заездов по раундам (в т.ч. ПК вне выбранного набора). `applyNetGame` для
    `netIsComp()` не запускает обычный `netRaceBegin`. Старт/финиш/next —
    сообщения `comp_start|comp_finish|comp_next` только с доски админа.
    Состояние турнира пишется атомарно в `relay/data/competition.json`

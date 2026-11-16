@@ -4798,6 +4798,71 @@ function compStationLive(c, self){
     '<span class="cl-track">' + escapeHtml(compTrackName(c.track)) + '</span>';
   compLiveEl.classList.add('show');
 }
+/* Итоговый результат строки положения: время финала либо пояснение. */
+function compStandResultText(r){
+  if(r.status === 'out') return r.note || 'выбыл';
+  if(r.fin != null) return Number(r.fin).toFixed(2) + ' с';
+  return r.note || '';
+}
+function compHeatResultText(r){
+  if(r.failed) return 'сход';
+  if(r.fin != null) return Number(r.fin).toFixed(2) + ' с';
+  return r.done ? 'финиш' : '—';
+}
+/* Итоговый экран компьютера: таблица положения + все результаты заездов. */
+function compFinalHtml(c, self){
+  const mySid = Number(self && self.sid) || 0;
+  const myRow = (c.standings || []).find(r => Number(r.sid) === mySid);
+  const standings = (c.standings || []).slice().sort((a, b) => a.place - b.place);
+  const standRows = standings.length
+    ? standings.map(r =>
+      '<tr' + (mySid && Number(r.sid) === mySid ? ' class="me"' : '') + '>' +
+        '<td class="p">' + r.place + '</td>' +
+        '<td class="n">' + escapeHtml(r.name) + '</td>' +
+        '<td class="r">' + escapeHtml(compStandResultText(r)) + '</td>' +
+      '</tr>').join('')
+    : '<tr><td class="none" colspan="3">Нет участников.</td></tr>';
+
+  const roundBlocks = (c.rounds || []).map(round => {
+    const heats = (round.heats || []).filter(h => (h.results || []).length);
+    if(!heats.length) return '';
+    const heatBlocks = heats.map(h => {
+      const rows = h.results.slice().sort((a, b) => a.place - b.place).map(r =>
+        '<tr' + (mySid && Number(r.sid) === mySid ? ' class="me"' : '') + '>' +
+          '<td class="p">' + r.place + '</td>' +
+          '<td class="n">' + escapeHtml(compStudentNameById(c, r.sid)) + '</td>' +
+          '<td class="r">' + escapeHtml(compHeatResultText(r)) + '</td>' +
+        '</tr>').join('');
+      return '<div class="cs-heat"><div class="cs-heat-t">' + escapeHtml(h.label || 'Заезд') + '</div>' +
+        '<table class="cs-table"><tbody>' + rows + '</tbody></table></div>';
+    }).join('');
+    return '<div class="cs-round"><div class="cs-round-t">' + escapeHtml(round.name || '') + '</div>' + heatBlocks + '</div>';
+  }).join('');
+
+  return '<div class="cs-final">' +
+    '<div class="cs-kicker">СОРЕВНОВАНИЕ · ' + escapeHtml(c.className || '') + '</div>' +
+    '<div class="cs-final-head">' +
+      (myRow ? '<div class="cs-place">' + myRow.place + '</div>' : '') +
+      '<div class="cs-final-title">' +
+        '<div class="cs-name">' + escapeHtml(myRow ? myRow.name : (c.title || c.className || 'Соревнование')) + '</div>' +
+        '<div class="cs-state">' + (myRow ? 'место в соревновании' : 'Соревнование завершено') + '</div>' +
+        '<div class="cs-hint">' + (myRow ? escapeHtml(c.title || '') + ' · ' : '') + escapeHtml(compTrackName(c.track)) + '</div>' +
+      '</div>' +
+    '</div>' +
+    '<div class="cs-final-grid">' +
+      '<section><h3>Итоговое положение</h3>' +
+        '<table class="cs-table cs-stand">' +
+          '<thead><tr><th class="p">#</th><th class="n">Участник</th><th class="r">Результат</th></tr></thead>' +
+          '<tbody>' + standRows + '</tbody>' +
+        '</table>' +
+      '</section>' +
+      '<section><h3>Все результаты</h3>' +
+        (roundBlocks || '<p class="cs-hint">Заезды не проводились.</p>') +
+      '</section>' +
+    '</div>' +
+    '<div class="cs-hint">Соревнование завершено. Результаты остаются на экране.</div>' +
+  '</div>';
+}
 function compStudentResultHtml(c, self){
   const sid = self && self.sid;
   const final = (c.standings || []).find(r => Number(r.sid) === Number(sid));
@@ -4829,6 +4894,15 @@ function compStudentOnState(c, self){
     return;
   }
   if(self && self.name) netRoom.selfName = self.name;
+  if(c.phase === 'finished'){
+    compStopLocal();
+    if(compLiveEl) compLiveEl.classList.remove('show');
+    netRoom.compActive = false;
+    netRoom.compBlocked = true;
+    compStationEl.innerHTML = compFinalHtml(c, self);
+    compStationEl.classList.add('show');
+    return;
+  }
   if(self && self.allowed === false){
     compStopLocal();
     if(compLiveEl) compLiveEl.classList.remove('show');

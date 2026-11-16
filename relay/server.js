@@ -671,26 +671,164 @@ function compBuildOlympic(students) {
   }
   return { rounds, heats: rounds.flatMap((r) => r.heats) };
 }
-function compRotate(arr, shift) {
-  const n = arr.length;
-  if (!n) return [];
-  const k = ((shift % n) + n) % n;
-  return arr.slice(k).concat(arr.slice(0, k));
+/* Ключ пары участников — чтобы помнить, кто с кем уже летал. */
+function compPairKey(a, b) {
+  const x = Number(a);
+  const y = Number(b);
+  return x < y ? x + ':' + y : y + ':' + x;
 }
-/* Накопление очков: заданное число раундов, в каждом летают все участники;
-   группы сдвигаются, чтобы соперники менялись. */
+/* Разбить участников на группы так, чтобы в этом раунде было как можно
+   меньше повторных соперников: каждый следующий участник идёт в группу,
+   где он меньше всех встречался, при равных условиях — в меньшую. */
+function compPointsGroups(ids, cap, met) {
+  const count = Math.max(1, Math.ceil(ids.length / cap));
+  const groups = Array.from({ length: count }, () => []);
+  for (const sid of ids) {
+    let best = -1;
+    let bestScore = Infinity;
+    for (let gi = 0; gi < groups.length; gi++) {
+      const g = groups[gi];
+      if (g.length >= cap) continue;
+      let repeats = 0;
+      for (const other of g) {
+        if (met.has(compPairKey(sid, other))) repeats++;
+      }
+      const score = repeats * 100 + g.length / cap;
+      if (score < bestScore) { bestScore = score; best = gi; }
+    }
+    if (best < 0) {
+      best = 0;
+      for (let gi = 1; gi < groups.length; gi++) {
+        if (groups[gi].length < groups[best].length) best = gi;
+      }
+    }
+    groups[best].push(sid);
+  }
+  return groups.filter((g) => g.length);
+}
+/* Локальное улучшение групп: меняем участников местами между группами,
+   пока это уменьшает число повторных соперников в этом раунде. */
+function compSwapImprove(groups, met) {
+  const groupCost = (g) => {
+    let c = 0;
+    for (let i = 0; i < g.length; i++) {
+      for (let j = i + 1; j < g.length; j++) {
+        const n = (met.get(compPairKey(g[i], g[j])) || 0) + 1;
+        c += n * n;   // выпуклая цена: третья встреча дороже двух вторых
+      }
+    }
+    return c;
+  };
+  for (let pass = 0; pass < 20; pass++) {
+    let improved = false;
+    for (let a = 0; a < groups.length; a++) {
+      for (let b = a + 1; b < groups.length; b++) {
+        for (let i = 0; i < groups[a].length; i++) {
+          for (let j = 0; j < groups[b].length; j++) {
+            const before = groupCost(groups[a]) + groupCost(groups[b]);
+            const p = groups[a][i];
+            const q = groups[b][j];
+            groups[a][i] = q;
+            groups[b][j] = p;
+            if (groupCost(groups[a]) + groupCost(groups[b]) < before) {
+              improved = true;
+            } else {
+              groups[a][i] = p;
+              groups[b][j] = q;
+            }
+          }
+        }
+      }
+    }
+    if (!improved) break;
+  }
+  return groups;
+}
+/* Глобальная донастройка расписания: перестановки между группами одного
+   раунда, уменьшающие число повторных встреч (выпуклая цена c²). */
+function compOptimizePoints(rounds) {
+  const counts = new Map();
+  const bump = (a, b, d) => {
+    const k = compPairKey(a, b);
+    const c = (counts.get(k) || 0) + d;
+    if (c <= 0) counts.delete(k); else counts.set(k, c);
+  };
+  for (const round of rounds) {
+    for (const h of round.heats) {
+      const p = h.participants;
+      for (let i = 0; i < p.length; i++) {
+        for (let j = i + 1; j < p.length; j++) bump(p[i], p[j], +1);
+      }
+    }
+  }
+  let seed = 1234567;
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+  const cost = (c) => c * c;
+  let idle = 0;
+  for (let attempt = 0; attempt < 20000 && idle < 4000; attempt++) {
+    const round = rounds[Math.floor(rnd() * rounds.length)];
+    if (!round || round.heats.length < 2) { idle++; continue; }
+    const ai = Math.floor(rnd() * round.heats.length);
+    let bi = Math.floor(rnd() * round.heats.length);
+    if (bi === ai) bi = (bi + 1) % round.heats.length;
+    const A = round.heats[ai].participants;
+    const B = round.heats[bi].participants;
+    if (!A.length || !B.length) { idle++; continue; }
+    const i = Math.floor(rnd() * A.length);
+    const j = Math.floor(rnd() * B.length);
+    const p = A[i];
+    const q = B[j];
+    const moves = [];
+    for (const x of A) if (x !== p) moves.push([p, x, -1]);
+    for (const y of B) if (y !== q) moves.push([q, y, -1]);
+    for (const x of A) if (x !== p) moves.push([q, x, +1]);
+    for (const y of B) if (y !== q) moves.push([p, y, +1]);
+    let delta = 0;
+    for (const [u, v, d] of moves) {
+      const c = counts.get(compPairKey(u, v)) || 0;
+      delta += cost(c + d) - cost(c);
+    }
+    if (delta < 0) {
+      for (const [u, v, d] of moves) bump(u, v, d);
+      A[i] = q;
+      B[j] = p;
+      idle = 0;
+    } else {
+      idle++;
+    }
+  }
+  return rounds;
+}
+/* Накопление очков: заданное число раундов, в каждом летают все участники.
+   Группы пересобираются от раунда к раунду так, чтобы соперники менялись. */
 function compBuildPoints(students) {
   compHeatSeq = 0;
   const cap = Math.max(2, Math.min(COMP_MAX, Number(comp && comp.heatSize) || COMP_MAX));
   const roundCount = Math.max(COMP_ROUNDS_MIN,
     Math.min(COMP_ROUNDS_MAX, Number(comp && comp.roundCount) || COMP_ROUNDS_DEFAULT));
   const ids = students.map((s) => s.id);
+  const met = new Map();
   const rounds = [];
   for (let r = 1; r <= roundCount; r++) {
-    const order = compRotate(ids, (r - 1) * cap);
-    const heats = compChunk(order, cap).map((parts, i) => compNewHeat(r, i + 1, parts, []));
+    let groups;
+    if (r === 1) {
+      groups = compChunk(ids, cap);
+    } else {
+      groups = compPointsGroups(ids, cap, met);
+      compSwapImprove(groups, met);
+    }
+    const heats = groups.map((parts, i) => compNewHeat(r, i + 1, parts, []));
     rounds.push({ index: r, name: roundCount > 1 ? ('Раунд ' + r) : 'Заезды', heats });
+    for (const g of groups) {
+      for (let i = 0; i < g.length; i++) {
+        for (let j = i + 1; j < g.length; j++) {
+          const k = compPairKey(g[i], g[j]);
+          met.set(k, (met.get(k) || 0) + 1);
+        }
+      }
+    }
   }
+  compOptimizePoints(rounds);
   return { rounds, heats: rounds.flatMap((x) => x.heats) };
 }
 function compBuildBracket(students) {

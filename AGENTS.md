@@ -316,8 +316,10 @@ AGENTS.md               # этот файл
    лучших), `olympic` (`compBuildOlympic`: пары 1×1, победитель идёт дальше,
    нечётный участник проходит bye — `compAutoFinishByes`, перед финалом матч
    за 3-е место между проигравшими полуфиналов), `points`
-   (`compBuildPoints`: `comp.roundCount` раундов, в каждом летают все, группы
-   сдвигаются; очки по месту из `COMP_POINTS`, положение — по сумме очков,
+   (`compBuildPoints`: `comp.roundCount` раундов, в каждом летают все; группы
+   пересобираются в каждом раунде с минимумом повторных соперников —
+   `compPointsGroups`, `compSwapImprove`, `compOptimizePoints`; очки по месту
+   из `COMP_POINTS`, положение — по сумме очков,
    затем по сходам и времени). `compFillSourcesOnce`+`compResolveAdvances`
    досчитывают проходы и bye; `compFinalizeHeat` для olympic оставляет только
    победителя, для points — никого не выбивает.

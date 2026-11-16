@@ -292,13 +292,16 @@
     box-shadow:0 20px 60px rgba(0,0,0,.6)}
   #netModal.comp-setup .gp-card{width:min(840px,96vw)}
   #netModal h2{margin:0 0 6px;font-size:20px;color:#9fd0ff}
-  .net-row{justify-content:flex-start;margin:12px 0}
-  .net-row button{background:rgba(159,208,255,.18);border:1px solid rgba(159,208,255,.55);
+  #netModal .gp-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;
+    gap:12px;font-size:13px;margin-bottom:6px}
+  #netModal .gp-btns{display:flex;flex-wrap:wrap;align-items:center;gap:10px;justify-content:flex-end;margin-top:18px}
+  #netModal .gp-btns.net-row{justify-content:flex-start;margin:12px 0}
+  #netModal .gp-btns button{background:rgba(159,208,255,.18);border:1px solid rgba(159,208,255,.55);
     color:#eaf6ff;border-radius:10px;padding:9px 15px;font-size:13px;font-weight:600;cursor:pointer}
-  .net-row button:hover:not(:disabled){background:rgba(159,208,255,.3)}
-  .net-row button:disabled{opacity:.45;cursor:default}
-  .net-row button.net-ghost{background:transparent;border-color:rgba(255,255,255,.28);color:#c9d6e6}
-  .net-row button.net-ghost:hover:not(:disabled){background:rgba(255,255,255,.08)}
+  #netModal .gp-btns button:hover:not(:disabled){background:rgba(159,208,255,.3)}
+  #netModal .gp-btns button:disabled{opacity:.45;cursor:default}
+  #netModal .gp-btns button.net-ghost{background:transparent;border-color:rgba(255,255,255,.28);color:#c9d6e6}
+  #netModal .gp-btns button.net-ghost:hover:not(:disabled){background:rgba(255,255,255,.08)}
   .net-step{margin:10px 0 4px;font-size:12px;color:#cfe0f5;line-height:1.5}
   .net-players{display:flex;flex-direction:column;gap:6px;margin:6px 0 4px}
   .net-player{display:flex;justify-content:space-between;gap:12px;align-items:center;
@@ -339,10 +342,10 @@
   .net-doc{margin:10px 0 2px;text-align:center;font-size:12px}
   .net-doc a{color:#9fd0ff;text-decoration:none;border-bottom:1px dashed rgba(159,208,255,.5)}
   .net-doc a:hover{color:#dcebff}
-  .net-row button.net-pair{background:rgba(255,224,102,.16);border-color:rgba(255,224,102,.6);color:#ffe9a8}
-  .net-row button.net-pair:hover:not(:disabled){background:rgba(255,224,102,.28)}
-  .net-row button.net-director{background:rgba(159,208,255,.18);border-color:rgba(159,208,255,.6);color:#dcebff}
-  .net-row button.net-director:hover:not(:disabled){background:rgba(159,208,255,.3)}
+  #netModal .gp-btns button.net-pair{background:rgba(255,224,102,.16);border-color:rgba(255,224,102,.6);color:#ffe9a8}
+  #netModal .gp-btns button.net-pair:hover:not(:disabled){background:rgba(255,224,102,.28)}
+  #netModal .gp-btns button.net-director{background:rgba(159,208,255,.18);border-color:rgba(159,208,255,.6);color:#dcebff}
+  #netModal .gp-btns button.net-director:hover:not(:disabled){background:rgba(159,208,255,.3)}
 
   /* ---------- парная гонка: админ-наблюдатель ---------- */
   body.spec-mode #hud,
@@ -732,8 +735,8 @@
   .cp-setup .cp-ok a{color:#9fd0ff}
   .cp-setup .cp-foot{display:flex;gap:9px;flex-wrap:wrap;margin-top:6px}
   .cp-setup .net-mini{padding:4px 8px}
-  .net-row button.net-comp{background:rgba(255,224,102,.14);border-color:rgba(255,224,102,.55);color:#ffe9a8}
-  .net-row button.net-comp:hover:not(:disabled){background:rgba(255,224,102,.28)}
+  #netModal .gp-btns button.net-comp{background:rgba(255,224,102,.14);border-color:rgba(255,224,102,.55);color:#ffe9a8}
+  #netModal .gp-btns button.net-comp:hover:not(:disabled){background:rgba(255,224,102,.28)}
 
   @media (max-width:760px){
     #compAdmin{width:250px;font-size:10.5px}

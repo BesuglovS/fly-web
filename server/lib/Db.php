@@ -110,6 +110,10 @@ class FlyDb
             self::migrateV4($db);
             $db->exec('PRAGMA user_version = 4');
         }
+        if ($version < 5) {
+            self::migrateV5($db);
+            $db->exec('PRAGMA user_version = 5');
+        }
     }
 
     /**
@@ -189,6 +193,72 @@ class FlyDb
         if (!isset($cols['max'])) {
             $db->exec('ALTER TABLE rooms ADD COLUMN max INTEGER NOT NULL DEFAULT 4');
         }
+    }
+
+    /**
+     * Миграция v5: архив результатов гонок и рейтинг Elo.
+     *
+     * race_events — один заезд/гонка; record_key защищает от повторной
+     * синхронизации. race_rows — результаты участников. ratings —
+     * пересчитываемый снимок Elo (источник истины — race_events/race_rows).
+     */
+    private static function migrateV5(PDO $db): void
+    {
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS race_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                record_key TEXT NOT NULL UNIQUE,
+                source TEXT NOT NULL DEFAULT 'comp',
+                room_id INTEGER NOT NULL DEFAULT 0,
+                comp_id TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL DEFAULT '',
+                class_id TEXT NOT NULL DEFAULT '',
+                class_name TEXT NOT NULL DEFAULT '',
+                track TEXT NOT NULL DEFAULT '',
+                mode TEXT NOT NULL DEFAULT 'angle',
+                format TEXT NOT NULL DEFAULT 'heats',
+                rated INTEGER NOT NULL DEFAULT 0,
+                finished_at INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS race_rows (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL DEFAULT '',
+                class_name TEXT NOT NULL DEFAULT '',
+                place INTEGER NOT NULL DEFAULT 0,
+                fin REAL,
+                time REAL NOT NULL DEFAULT 0,
+                prog INTEGER NOT NULL DEFAULT 0,
+                done INTEGER NOT NULL DEFAULT 0,
+                failed INTEGER NOT NULL DEFAULT 0,
+                points INTEGER NOT NULL DEFAULT 0,
+                rating_before REAL NOT NULL DEFAULT 0,
+                rating_after REAL NOT NULL DEFAULT 0,
+                rating_delta REAL NOT NULL DEFAULT 0,
+                UNIQUE(event_id, user_id),
+                FOREIGN KEY (event_id) REFERENCES race_events(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS ratings (
+                user_id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL DEFAULT '',
+                class_name TEXT NOT NULL DEFAULT '',
+                rating REAL NOT NULL DEFAULT 1200,
+                races INTEGER NOT NULL DEFAULT 0,
+                wins INTEGER NOT NULL DEFAULT 0,
+                podiums INTEGER NOT NULL DEFAULT 0,
+                place_sum INTEGER NOT NULL DEFAULT 0,
+                last_event_at INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_race_events_rated ON race_events(rated, finished_at);
+            CREATE INDEX IF NOT EXISTS idx_race_events_finished ON race_events(finished_at);
+            CREATE INDEX IF NOT EXISTS idx_race_rows_user ON race_rows(user_id);
+        ");
     }
 
     /**

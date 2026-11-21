@@ -16,7 +16,8 @@
  *                   | join{roomId} | quick | control{map,mode,started,max,title,race?}
  *                   | comp_create{title,classId,className,track,adminName,students[],stations[]}
  *                   | comp_sync | comp_start | comp_finish | comp_next
- *                   | comp_set_track{track} | comp_set_stations{stations[]} | comp_close | st{p,q} | leave
+ *                   | comp_set_track{track} | comp_set_stations{stations[]}
+ *                   | comp_assign{heatId,station,sid} | comp_close | st{p,q} | leave
  *   релей → клиент: lobby{rooms,maps,races,maxOptions,maxHard,self}
  *                   | welcome{self,room,participants,maps,races,maxOptions,maxHard,isAdmin}
  *                   | room{room,participants} | st{id,p,q}
@@ -34,6 +35,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { WebSocketServer } = require('ws');
+const results = require('./results');
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const PUBDIR = path.join(__dirname, '..', 'public');
@@ -66,6 +68,7 @@ function stationSortKey(id) {
 }
 const COMP_MAX = 6;                 // одновременно в заезде
 const COMP_STUDENTS_MAX = 64;       // предохранитель для класса
+const COMP_CAMERA_PICK_MS = 10000;  // выбор камеры (C) перед отсчётом
 const COMP_COUNTDOWN_MS = 5000;     // общий отсчёт до старта
 const COMP_NAME_MAX = 60;
 /* Форматы турнира:
@@ -141,6 +144,9 @@ const server = http.createServer((req, res) => {
     res.end('ok');
     return;
   }
+  let urlObj = null;
+  try { urlObj = new URL(req.url || '/', 'http://relay.local'); } catch (_) {}
+  if (urlObj && results.handleHttp(req, res, urlObj)) return;
   serveStatic(req, res);
 });
 
@@ -212,11 +218,16 @@ function compStateSnapshot() {
       mode: comp.mode,
       format: comp.format || 'heats',
       roundCount: Number(comp.roundCount) || 0,
+      rated: !!comp.rated,
       adminName: comp.adminName,
       createdAt: comp.createdAt,
       stationIds: (comp.stationIds || STATIONS).slice(),
       heatSize: Number(comp.heatSize) || COMP_MAX,
-      students: comp.students.map((s) => ({ id: Number(s.id), name: String(s.name) })),
+      students: comp.students.map((s) => ({
+        id: Number(s.id),
+        name: String(s.name),
+        className: String(s.className || ''),
+      })),
       rounds: comp.rounds.map((r) => ({
         index: Number(r.index) || 1,
         name: String(r.name || ''),
@@ -303,7 +314,7 @@ function compRestoreState() {
     const name = sanitizeName(s.name, COMP_NAME_MAX);
     if (!name) continue;
     seen.add(id);
-    students.push({ id, name });
+    students.push({ id, name, className: sanitizeName(s.className || s.class_name || '', 60) });
   }
   if (!students.length) {
     console.warn('[comp] state restore skipped: no valid students');
@@ -404,6 +415,7 @@ function compRestoreState() {
     mode: sanitizeMode(saved.mode),
     format: sanitizeCompFormat(saved.format),
     roundCount: sanitizeCompRounds(saved.roundCount),
+    rated: !!saved.rated,
     adminId: 0,
     adminName: sanitizeName(saved.adminName, COMP_NAME_MAX) || 'Учитель',
     createdAt: Number(saved.createdAt) || Date.now(),
@@ -426,6 +438,7 @@ function compRestoreState() {
   compHeatSeq = Math.max(compHeatSeq, maxHeatId);
   compResolveAdvances();
   compSkipEmptyLaterHeats();
+  results.archiveAllDone(comp);
 
   /* Прерванный заезд нельзя честно продолжить после перезапуска релея. */
   let interrupted = null;
@@ -916,23 +929,40 @@ function compSkipEmptyLaterHeats() {
 function compAllHeatsDone() {
   return compAllHeats().every((h) => h.status === 'done');
 }
-/* Предварительное назначение учеников на подключённые ПК (до старта). */
+/* Предварительное назначение учеников на подключённые ПК (до старта).
+   Если админ уже расставил участников вручную (heat.assignments), уважаем
+   его выбор: недостающие места не заполняем автоматически, пока он сам
+   не посадит всех участников заезда. */
 function compPreviewAssignments(heat) {
   const connected = compConnectedStations().filter((s) => s.connected);
   const map = {};
   const missing = [];
   if (heat) {
-    heat.participants.forEach((sid, i) => {
-      if (connected[i]) map[sid] = connected[i].id;
-      else missing.push(sid);
-    });
+    const manual = heat.assignments && typeof heat.assignments === 'object' ? heat.assignments : null;
+    if (manual) {
+      const used = new Set();
+      heat.participants.forEach((sid) => {
+        const st = sanitizeStation(manual[sid]);
+        if (st && connected.some((s) => s.id === st) && !used.has(st)) {
+          map[sid] = st;
+          used.add(st);
+        } else {
+          missing.push(sid);
+        }
+      });
+    } else {
+      heat.participants.forEach((sid, i) => {
+        if (connected[i]) map[sid] = connected[i].id;
+        else missing.push(sid);
+      });
+    }
   }
   return { map, missing, ready: !!heat && heat.participants.length > 0 && missing.length === 0, connected };
 }
 function compHeatAssignments(heat) {
   if (!heat) return {};
-  if (heat.assignments) return heat.assignments;
   if (heat.status === 'pending') return compPreviewAssignments(heat).map;
+  if (heat.assignments) return heat.assignments;
   return {};
 }
 function compAssignmentForStation(station) {
@@ -1198,19 +1228,31 @@ function compPublic() {
     mode: comp.mode,
     format: comp.format || 'heats',
     roundCount: Number(comp.roundCount) || 0,
+    rated: !!comp.rated,
     phase: comp.phase,
     capacity: COMP_MAX,
     heatSize: Number(comp.heatSize) || COMP_MAX,
     stationIds: (comp.stationIds || STATIONS).slice(),
     createdAt: comp.createdAt,
     startsInMs: comp.phase === 'countdown' ? Math.max(0, comp.startAt - Date.now()) : 0,
+    pickMs: COMP_CAMERA_PICK_MS,
+    countdownMs: COMP_COUNTDOWN_MS,
+    picking: comp.phase === 'countdown' && comp.startAt - Date.now() > COMP_COUNTDOWN_MS,
+    pickLeftMs: comp.phase === 'countdown'
+      ? Math.max(0, comp.startAt - Date.now() - COMP_COUNTDOWN_MS) : 0,
     startedOnce,
     rounds: comp.rounds.map((r) => ({
       index: r.index,
       name: r.name,
       heats: r.heats.map((h) => compHeatPublic(h)),
     })),
-    students: comp.students.map((s) => ({ id: s.id, name: s.name })),
+    students: comp.students.map((s) => ({
+      id: s.id,
+      name: s.name,
+      className: s.className || '',
+      rating: results.ratingFor(s.id),
+    })),
+    ratingTop: results.ratingTop(10),
     currentHeat: compHeatPublic(current || active),
     activeHeat: compHeatPublic(active),
     nextHeat: compHeatPublic(next),
@@ -1386,6 +1428,8 @@ function compClose(reason, exceptId) {
   const old = comp;
   if (old.phaseTimer) { clearTimeout(old.phaseTimer); old.phaseTimer = null; }
   if (old.heatTimer) { clearTimeout(old.heatTimer); old.heatTimer = null; }
+  results.archiveAllDone(old);
+  results.archiveInterrupted(old, 'closed');
   const room = rooms.get(old.roomId);
   if (room) {
     for (const c of room.members.values()) {
@@ -1435,7 +1479,8 @@ function compCreate(adminClient, msg) {
     const name = sanitizeName(item.name, COMP_NAME_MAX);
     if (!name) continue;
     seen.add(id);
-    students.push({ id, name });
+    const className = sanitizeName(item.className || item.class_name || '', 60);
+    students.push({ id, name, className });
     if (students.length >= COMP_STUDENTS_MAX) break;
   }
   if (!students.length) {
@@ -1502,6 +1547,7 @@ function compCreate(adminClient, msg) {
     mode: sanitizeMode(msg.mode),
     format,
     roundCount,
+    rated: !!msg.rated,
     adminId: adminClient.id,
     adminName: sanitizeName(msg.adminName, COMP_NAME_MAX) || adminClient.name,
     createdAt: Date.now(),
@@ -1575,7 +1621,7 @@ function compStartHeat(adminClient) {
     send(adminClient.ws, {
       t: 'error',
       code: 'comp_no_stations',
-      message: 'Не хватает подключённых компьютеров: ' + names,
+      message: 'Не распределены по компьютерам: ' + names,
     });
     compBroadcast();
     return;
@@ -1585,10 +1631,13 @@ function compStartHeat(adminClient) {
   if (!room) return;
   compClearClientAssignments();
   const assignments = {};
-  heat.participants.forEach((sid, i) => {
-    const station = preview.connected[i].id;
+  const byStation = new Map(preview.connected.map((s) => [s.id, s]));
+  heat.participants.forEach((sid) => {
+    const station = preview.map[sid];
+    if (!station) return;
     assignments[sid] = station;
-    const client = preview.connected[i].client;
+    const slot = byStation.get(station);
+    const client = slot && slot.client;
     if (client) {
       client.compSid = sid;
       client.compHeatId = heat.id;
@@ -1607,8 +1656,9 @@ function compStartHeat(adminClient) {
   comp.currentHeatId = heat.id;
   comp.nextHeatId = 0;
   comp.lastHeatId = 0;
-  comp.startAt = Date.now() + COMP_COUNTDOWN_MS;
-  comp.startsIn = COMP_COUNTDOWN_MS;
+  const prestartMs = COMP_CAMERA_PICK_MS + COMP_COUNTDOWN_MS;
+  comp.startAt = Date.now() + prestartMs;
+  comp.startsIn = prestartMs;
   room.params.race = comp.track;
   room.params.mode = comp.mode;
   room.started = true;
@@ -1621,10 +1671,10 @@ function compStartHeat(adminClient) {
     comp.startsIn = 0;
     compSaveState();
     compBroadcast();
-  }, COMP_COUNTDOWN_MS);
+  }, prestartMs);
 
   if (comp.heatTimer) clearTimeout(comp.heatTimer);
-  const timeout = (COMP_TIMEOUT[comp.track] || 150000) + COMP_COUNTDOWN_MS;
+  const timeout = (COMP_TIMEOUT[comp.track] || 150000) + prestartMs;
   comp.heatTimer = setTimeout(() => {
     if (!comp || comp.activeHeatId !== heat.id) return;
     const h = compFindHeat(heat.id);
@@ -1698,6 +1748,7 @@ function compFinalizeHeat(heat, reason) {
   comp.phase = (compAllHeatsDone() && !next) ? 'finished' : 'heat_done';
   if (comp.phase === 'finished') comp.currentHeatId = 0;
 
+  results.archiveCompHeat(comp, heat, reason || heat.finishReason || 'admin');
   compSaveState();
   compBroadcast();
   const room = rooms.get(comp.roomId);
@@ -1716,6 +1767,22 @@ function compNext(adminClient) {
     compSaveState();
     compBroadcast();
   }
+}
+/* Сменить тип турнира (рейтинговый/тренировка) можно только до первого старта. */
+function compSetRated(adminClient, rated) {
+  if (!comp) return;
+  if (!adminClient.isAdmin || adminClient.id !== comp.adminId) return;
+  const started = compAllHeats().some((h) => h.status !== 'pending' || h.results.length > 0);
+  if (started) {
+    send(adminClient.ws, {
+      t: 'error',
+      message: 'Тип турнира нельзя менять после первого заезда',
+    });
+    return;
+  }
+  comp.rated = !!rated;
+  compSaveState();
+  compBroadcast();
 }
 function compSetTrack(adminClient, track) {
   if (!comp) return;
@@ -1794,6 +1861,82 @@ function compSetStations(adminClient, rawStations) {
   for (const c of clients.values()) {
     if (c.station && ids.indexOf(c.station) >= 0) compTryJoin(c, true);
   }
+  if (room) pushRoom(room);
+  compBroadcast();
+}
+/* Ручная расстановка участников заезда по компьютерам (только админ).
+   Если выбранный ПК занят другим участником этого заезда — они меняются
+   местами; пустое значение освобождает компьютер. */
+function compAssignStation(adminClient, msg) {
+  if (!comp) return;
+  if (!adminClient || !adminClient.isAdmin || adminClient.id !== comp.adminId) return;
+  if (comp.phase !== 'prep' && comp.phase !== 'heat_done') {
+    send(adminClient.ws, {
+      t: 'error',
+      message: 'Распределять участников можно только перед заездом',
+    });
+    return;
+  }
+  const heatId = Number(msg.heatId)
+    || (comp.phase === 'heat_done' ? comp.nextHeatId : comp.currentHeatId);
+  const heat = compFindHeat(heatId);
+  if (!heat || heat.status !== 'pending') {
+    send(adminClient.ws, { t: 'error', message: 'Этот заезд уже нельзя изменить' });
+    return;
+  }
+  const targetHeatId = comp.phase === 'heat_done' ? comp.nextHeatId : comp.currentHeatId;
+  if (heat.id !== targetHeatId) {
+    send(adminClient.ws, {
+      t: 'error',
+      message: 'Сейчас можно распределять только участников текущего заезда',
+    });
+    return;
+  }
+  const station = sanitizeStation(msg.station);
+  const allowed = Array.isArray(comp.stationIds) && comp.stationIds.length ? comp.stationIds : STATIONS;
+  if (!station || allowed.indexOf(station) < 0) {
+    send(adminClient.ws, { t: 'error', message: 'Этот компьютер не выбран для соревнования' });
+    return;
+  }
+  const connectedIds = new Set(
+    compConnectedStations().filter((s) => s.connected).map((s) => s.id),
+  );
+  if (!connectedIds.has(station)) {
+    send(adminClient.ws, { t: 'error', message: 'Компьютер ' + station + ' не подключён' });
+    return;
+  }
+  const sid = Number(msg.sid) || 0;
+  if (sid && !heat.participants.includes(sid)) {
+    send(adminClient.ws, { t: 'error', message: 'Участник не входит в этот заезд' });
+    return;
+  }
+
+  const map = Object.assign({}, compPreviewAssignments(heat).map);
+  let prevStation = '';
+  for (const [rawSid, st] of Object.entries(map)) {
+    if (Number(rawSid) === sid) prevStation = st;
+  }
+  let occupant = 0;
+  for (const [rawSid, st] of Object.entries(map)) {
+    if (st === station) occupant = Number(rawSid);
+  }
+  if (!sid) {
+    if (occupant) delete map[occupant];
+  } else {
+    map[sid] = station;
+    if (occupant && occupant !== sid) {
+      if (prevStation) map[occupant] = prevStation;
+      else delete map[occupant];
+    }
+  }
+
+  heat.assignments = {};
+  for (const [rawSid, st] of Object.entries(map)) {
+    const n = Number(rawSid);
+    if (heat.participants.includes(n) && sanitizeStation(st)) heat.assignments[n] = st;
+  }
+  compSaveState();
+  const room = rooms.get(comp.roomId);
   if (room) pushRoom(room);
   compBroadcast();
 }
@@ -2260,8 +2403,16 @@ wss.on('connection', (ws) => {
         compSetTrack(client, msg.track);
         break;
 
+      case 'comp_set_rated':
+        compSetRated(client, msg.rated);
+        break;
+
       case 'comp_set_stations':
         compSetStations(client, msg.stations);
+        break;
+
+      case 'comp_assign':
+        compAssignStation(client, msg);
         break;
 
       case 'comp_close':
@@ -2282,6 +2433,36 @@ wss.on('connection', (ws) => {
         }
         const out = { t: 'st', id: client.id, p: msg.p, q: msg.q };
         for (const c of room.members.values()) if (c.ws !== ws) send(c.ws, out);
+        break;
+      }
+
+      case 'race_result': {
+        const room = rooms.get(client.roomId);
+        if (!room || room.hostId !== client.id) break;
+        if (room.params && room.params.competition) break;
+        const rows = (Array.isArray(msg.rows) ? msg.rows : []).slice(0, 8).map((r) => {
+          const uid = Number(r && r.user_id) || 0;
+          const member = room.members.get(uid);
+          return {
+            user_id: uid,
+            name: member ? member.name : String((r && r.name) || '').slice(0, 60),
+            place: Number(r && r.place) || 0,
+            fin: r && r.fin != null ? Number(r.fin) : null,
+            time: Number(r && r.time) || 0,
+            prog: Number(r && r.prog) || 0,
+            done: !!(r && r.done),
+            failed: !!(r && r.failed),
+          };
+        });
+        const track = sanitizeRace(msg.track) || sanitizeRace(room.params && room.params.race);
+        results.archiveNetEvent({
+          roomId: room.id,
+          title: room.title,
+          track,
+          mode: (room.params && room.params.mode) || 'angle',
+          raceKey: msg.race_key,
+          rows,
+        });
         break;
       }
 
@@ -2332,6 +2513,13 @@ setInterval(() => {
     try { ws.ping(); } catch (_) {}
   }
 }, PING_MS);
+
+/* Архив результатов и рейтинг (локально + синхронизация на сайт). */
+results.initResults({
+  dataDir: COMP_STATE_DIR,
+  syncUrl: process.env.FLY_SYNC_URL || 'https://fly.nayanovaacademy.ru',
+  syncToken: process.env.FLY_SYNC_TOKEN || '',
+});
 
 /* Восстановить турнир, сохранённый предыдущим запуском релея. */
 compRestoreState();

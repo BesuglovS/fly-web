@@ -1440,6 +1440,7 @@ function renderStart1(){
     <p class="st-h3">Ещё</p>
     <div class="st-modes">
       <button type="button" class="st-mode st-small" id="stNetBtn">🌐 Сетевая игра</button>
+      <a class="st-mode st-small" href="/results.html" target="_blank" rel="noopener">🏆 Рейтинг</a>
       <button type="button" class="st-mode st-small" id="stFsBtn">⛶ Полный экран</button>
     </div>
     <p class="st-h3">Аккаунт</p>
@@ -2191,6 +2192,7 @@ const compSetup = {
   mode: 'angle',
   format: 'heats',
   rounds: 3,
+  rated: false,
   key: '',
   relay: '',
   launchUrl: '',
@@ -2527,6 +2529,10 @@ function renderCompSetup(){
         '<label class="cp-field">Участников из класса<select id="cpCount">' + countOptions + '</select></label>' +
         '<label class="cp-field">Название<input id="cpTitle" class="net-name" maxlength="60" value="' + escapeHtml(compSetup.title) + '"></label>' +
         '<label class="cp-field">Формат<select id="cpFormat">' + compFormatOptionsHtml(compSetup.format) + '</select></label>' +
+        '<label class="cp-field">Тип гонки<select id="cpRatedSel">' +
+          '<option value="0"' + (compSetup.rated ? '' : ' selected') + '>Тренировка</option>' +
+          '<option value="1"' + (compSetup.rated ? ' selected' : '') + '>Рейтинговая</option>' +
+        '</select></label>' +
         (compSetup.format === 'points'
           ? '<label class="cp-field">Раундов (все летают в каждом)<select id="cpRounds">' + compRoundsOptionsHtml(compSetup.rounds) + '</select></label>'
           : '') +
@@ -2630,6 +2636,11 @@ function renderCompSetup(){
   if(relayEl) relayEl.addEventListener('input', ()=>{
     compSetup.relay = relayEl.value.trim();
     compSetupUpdateStationLinks();
+  });
+  const ratedEl = document.getElementById('cpRatedSel');
+  if(ratedEl) ratedEl.addEventListener('change', ()=>{
+    compSetup.rated = ratedEl.value === '1';
+    compSetup.notice = '';
   });
   const keyEl = document.getElementById('cpAdminKey');
   if(keyEl) keyEl.addEventListener('input', ()=>{
@@ -2743,9 +2754,10 @@ function compCreateFromSite(){
     mode: compSetup.mode === 'acro' ? 'acro' : 'angle',
     format: compSetup.format || 'heats',
     rounds: Math.max(1, Math.min(8, Number(compSetup.rounds) || 3)),
+    rated: !!compSetup.rated,
     adminName: (authUser && (authUser.display_name || authUser.login)) || 'Учитель',
     stations: stations,
-    students: students.map(s => ({ id: s.id, name: s.name })),
+    students: students.map(s => ({ id: s.id, name: s.name, className: s.className || '' })),
   };
   let url = '';
   try{ url = compSetupAdminUrl(payload); }
@@ -2791,7 +2803,8 @@ function renderLobby(){
     const cap = pair ? 2 : (director ? (Number(r.params.racersMax) || 6) : r.max);
     const full = spectate ? (racers >= cap || r.started) : (r.count >= r.max);
     const status = r.started ? 'идёт' : 'ожидание';
-    const place = spectate ? netRaceName(r.params.race) : netMapName(r.map);
+    const place = (spectate ? netRaceName(r.params.race) : netMapName(r.map)) +
+      ((r.params && r.params.rated) ? ' · рейтинговая' : '');
     const title = r.title || (pair ? 'Парная гонка' : (director ? 'Гонка с наблюдателем' : 'Игра'));
     const suffix = pair ? ' · 1×1' : (director ? ' · наблюдатель' : '');
     return '<div class="net-room">' +
@@ -2849,6 +2862,20 @@ function renderLobby(){
     b.addEventListener('click', ()=> netJoin(Number(b.dataset.join))));
 }
 
+function netRatedButtonsHtml(info){
+  const rated = !!(info.params && info.params.rated);
+  const can = !NET_RELAY && netIsAdminUser() && !info.started;
+  const label = rated ? 'рейтинговая' : 'тренировка';
+  if(!can){
+    return '<p class="net-step">Тип: <b>' + label + '</b>' +
+      (NET_RELAY ? ' · на LAN-рееле рейтинг не ведётся' :
+        (!netIsAdminUser() ? ' · включает администратор' : ' · зафиксирован после старта')) + '</p>';
+  }
+  return '<div class="net-maps">' +
+    '<button type="button" data-rated="0" class="' + (!rated ? 'sel' : '') + '">🎓 Тренировка</button>' +
+    '<button type="button" data-rated="1" class="' + (rated ? 'sel' : '') + '">🏆 Рейтинговая</button>' +
+  '</div>';
+}
 function renderRoom(){
   const info = netRoom.info || {};
   const isHost = info.host_user_id === netRoom.selfId;
@@ -2893,6 +2920,7 @@ function renderRoom(){
     controls =
       '<p class="net-h3">Трасса</p><div class="net-maps">' + raceBtns + '</div>' +
       '<p class="net-h3">Режим полёта</p><div class="net-maps">' + modeBtns + '</div>' +
+      '<p class="net-h3">Тип гонки</p>' + netRatedButtonsHtml(info) +
       '<p class="net-step">Гонщики: ' + racerCount + ' / ' + racerLimit +
         (needMore ? ' — ждём участников' : '') + '</p>' +
       '<div class="gp-btns net-row">' +
@@ -2921,6 +2949,7 @@ function renderRoom(){
     controls =
       '<p class="net-h3">Локация</p><div class="net-maps">' + mapBtns + '</div>' +
       '<p class="net-h3">Режим полёта</p><div class="net-maps">' + modeBtns + '</div>' +
+      '<p class="net-h3">Тип гонки</p>' + netRatedButtonsHtml(info) +
       '<p class="net-h3">Участников (макс.)</p><div class="net-maps">' + sizeBtns + '</div>' +
       '<div class="gp-btns net-row">' +
         (info.started ? '<button type="button" id="netStart">🔁 Перезапустить гонку</button>'
@@ -2935,7 +2964,8 @@ function renderRoom(){
       '<div class="gp-btns net-row"><button type="button" id="netLeave" class="net-ghost">Выйти из игры</button></div>';
   }
 
-  const place = spectate ? netRaceName(info.params && info.params.race) : netMapName(info.map);
+  const place = (spectate ? netRaceName(info.params && info.params.race) : netMapName(info.map)) +
+    ((info.params && info.params.rated) ? ' · рейтинговая' : ' · тренировка');
   const suffix = pair ? ' · 1×1' : (director ? ' · наблюдатель' : '');
   netStepsEl.innerHTML =
     '<div class="net-player"><span>' + escapeHtml(info.title || 'Игра') + '</span><em>' +
@@ -2948,6 +2978,7 @@ function renderRoom(){
   netStepsEl.querySelectorAll('button[data-race]').forEach(b=> b.addEventListener('click', ()=> hostSetRace(b.dataset.race)));
   netStepsEl.querySelectorAll('button[data-map]').forEach(b=> b.addEventListener('click', ()=> hostSetMap(b.dataset.map)));
   netStepsEl.querySelectorAll('button[data-mode]').forEach(b=> b.addEventListener('click', ()=> hostSetMode(b.dataset.mode)));
+  netStepsEl.querySelectorAll('button[data-rated]').forEach(b=> b.addEventListener('click', ()=> hostControl({ rated: b.dataset.rated === '1' })));
   netStepsEl.querySelectorAll('button[data-max]').forEach(b=> b.addEventListener('click', ()=> hostSetMax(Number(b.dataset.max))));
 }
 
@@ -3173,6 +3204,7 @@ function hostControl(patch){
   if('map' in patch) info.map = patch.map;
   if('mode' in patch){ info.params = info.params || {}; info.params.mode = patch.mode; }
   if('race' in patch){ info.params = info.params || {}; info.params.race = patch.race; }
+  if('rated' in patch){ info.params = info.params || {}; info.params.rated = !!patch.rated; }
   if('max' in patch){ info.max = patch.max; netRoom.max = patch.max; }
   if('started' in patch) info.started = !!patch.started;
   if(NET_RELAY){
@@ -3318,6 +3350,9 @@ const netRace = {
   active: false,
   phase: 'idle',       // idle | waiting | countdown | running | done
   countdown: 0,
+  cdSec: 0,            // длительность короткого отсчёта (после выбора камеры)
+  camSec: 0,           // длительность окна выбора камеры в начале countdown
+  pickRace: false,     // гарантированное окно выбора камеры (только для трасс)
   waitUntil: 0,
   ready: new Set(),    // id участников, подтвердивших готовность (для хоста)
   results: new Map(),  // id -> { name, prog, time, done, failed, fin }
@@ -3325,6 +3360,8 @@ const netRace = {
   startedAt: 0,
   selfFailed: false,
   spectatorResultShown: false,
+  reportedKey: '',
+  reportTimer: null,
 };
 const countdownEl = document.getElementById('countdown');
 const raceBoardEl = document.getElementById('raceBoard');
@@ -3340,12 +3377,15 @@ function netRaceIsHost(){ return !!(netRoom.info && netRoom.selfId === netRoom.i
 function netRaceTotal(){ const lv = LEVELS[currentLevelIndex]; return (lv && lv.gates) ? lv.gates.length : 0; }
 function netRaceStop(){
   if(netRace.spectatorResultShown && overlayEl && overlayEl.classList.contains('show')) hideOverlay();
+  if(netRace.reportTimer){ clearTimeout(netRace.reportTimer); netRace.reportTimer = null; }
   netRace.active = false; netRace.phase = 'idle';
+  netRace.countdown = 0; netRace.cdSec = 0; netRace.camSec = 0; netRace.pickRace = false;
   netRace.ready.clear(); netRace.results.clear();
   netRace.startedAt = 0;
   netRace.spectatorResultShown = false;
+  netRace.reportedKey = '';
   if(raceBoardEl) raceBoardEl.classList.remove('show');
-  if(countdownEl) countdownEl.classList.remove('show');
+  if(countdownEl) countdownEl.classList.remove('show', 'wait', 'pick');
 }
 /* Уровень загружен, все на старте — начинаем общий отсчёт. */
 function netRaceBegin(){
@@ -3356,13 +3396,25 @@ function netRaceBegin(){
   netRace.startedAt = 0;
   netRace.spectatorResultShown = false;
   netRace.phase = 'waiting';
-  netRace.waitUntil = performance.now() + (netRaceIsHost() ? 6000 : 9000);   /* не ждём «готов» вечно */
+  netRace.cdSec = 0;
+  netRace.camSec = 0;
+  /* Гоночные трассы — гарантированное окно выбора камеры (C) ~10 с.
+     Свободный полёт стартует как раньше, по готовности. */
+  const raceId = netInfoRaceId(netRoom.info);
+  const raceLevel = LEVELS[currentLevelIndex] || {};
+  const isRace = !!raceId || !!raceLevel.race;
+  netRace.pickRace = isRace;
+  const hostWait = isRace ? 10000 : 6000;
+  const guestWait = isRace ? 11000 : 9000;
+  netRace.waitUntil = performance.now() + (netRaceIsHost() ? hostWait : guestWait);
   netRaceSendState(true);
   netBroadcast({ t:'ready', name: netRoom.selfName });
   netRaceMaybeGo();
 }
 function netRaceMaybeGo(){
   if(netIsComp() || !netRaceIsHost() || netRace.phase !== 'waiting') return;
+  /* Не обрываем окно выбора камеры раньше времени, даже если все готовы. */
+  if(netRace.pickRace && performance.now() < netRace.waitUntil) return;
   if(netRace.ready.size >= netRoom.peers.size) netRaceGo();
 }
 function netRaceGo(){
@@ -3370,6 +3422,8 @@ function netRaceGo(){
   if(netRace.phase === 'countdown' || netRace.phase === 'running') return;
   netRace.phase = 'countdown';
   netRace.countdown = 3.2;
+  netRace.cdSec = 3.2;
+  netRace.camSec = 0;
   if(netRaceIsHost()) netBroadcast({ t:'go', sec: netRace.countdown });
   renderCountdown();
 }
@@ -3409,6 +3463,8 @@ function netRaceHandle(fromId, m){
       netRace.active = true;
       netRace.phase = 'countdown';
       netRace.countdown = Number(m.sec) || 3.2;
+      netRace.cdSec = netRace.countdown;
+      netRace.camSec = 0;
       renderCountdown();
     }
     return;
@@ -3426,6 +3482,7 @@ function netRaceHandle(fromId, m){
     updateRaceBoard();
     if(netRace.phase === 'done') renderRaceResult();
     netSpectatorMaybeResult();
+    netTryReportRace(false);
     return;
   }
 }
@@ -3443,6 +3500,7 @@ function netRaceSendState(force){
   netRace.results.set(netRoom.selfId, rec);
   netBroadcast(Object.assign({ t:'race' }, rec));
   updateRaceBoard();
+  netTryReportRace(false);
 }
 /* Общая сортировка: финишировавшие по времени, затем «в гонке»/DNF по прогрессу. */
 function netRaceSortRows(){
@@ -3454,6 +3512,75 @@ function netRaceSortRows(){
     return b.prog - a.prog;
   });
   return rows;
+}
+function netRaceReportRacers(){
+  const out = [];
+  if(!netSelfIsSpectator()) out.push({ id: Number(netRoom.selfId), name: netRoom.selfName });
+  for(const p of netRoom.peers.values()){
+    if((p.role || 'racer') === 'racer') out.push({ id: Number(p.userId), name: p.name });
+  }
+  return out;
+}
+/* Итоговая таблица рейтинговой/тренировочной гонки — только на сайте,
+   от имени хоста. Сервер сам проверяет комнату и пересчитывает места. */
+function netTryReportRace(force){
+  if(netIsComp()) return;
+  if(!netRace.active) return;
+  if(!netRaceIsHost() || !netRoom.info || !netRoom.info.started) return;
+  const race = (netRoom.info.params && netRoom.info.params.race)
+    || ((LEVELS[currentLevelIndex] || {}).raceId) || '';
+  if(!race) return;
+  if(netRace.phase !== 'running' && netRace.phase !== 'done') return;
+  if(!netRace.startedAt) return;
+  const key = 'r' + Number(netRoom.info.id) + ':' + Math.round(netRace.startedAt);
+  if(netRace.reportedKey === key) return;
+  const racers = netRaceReportRacers();
+  if(racers.length < 2) return;
+  const rows = [];
+  for(const p of racers){
+    let r = netRace.results.get(Number(p.id));
+    if(!r){
+      if(!force) return;   /* ждём остальных до таймаута */
+      r = { prog: 0, time: 0, done: false, failed: true, fin: null };
+    }
+    rows.push({
+      user_id: Number(p.id),
+      name: p.name || '',
+      place: 0,
+      fin: r.fin != null ? Number(r.fin) : null,
+      time: Number(r.time) || 0,
+      prog: Number(r.prog) || 0,
+      done: !!r.done,
+      failed: !!r.failed,
+    });
+  }
+  rows.sort((a, b) => {
+    if(a.done !== b.done) return a.done ? -1 : 1;
+    if(a.done) return (a.fin || 0) - (b.fin || 0);
+    if(a.failed !== b.failed) return a.failed ? 1 : -1;
+    return b.prog - a.prog;
+  });
+  rows.forEach((r, i) => { r.place = i + 1; });
+  netRace.reportedKey = key;
+  if(NET_RELAY){
+    if(!relayReady){ netRace.reportedKey = ''; return; }
+    relaySend({ t: 'race_result', race_key: key, track: race, rows });
+    return;
+  }
+  const payload = {
+    room_id: Number(netRoom.info.id),
+    race_key: key,
+    track: String(race),
+    rows,
+  };
+  fetch('/api/results/report.php', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then((res) => {
+    if(!res.ok) netRace.reportedKey = '';
+  }).catch(() => { netRace.reportedKey = ''; });
 }
 function netRaceRowHtml(r, i, total, result){
   const status = r.done ? (r.fin || 0).toFixed(result ? 2 : 1) + ' с'
@@ -3478,19 +3605,48 @@ function updateRaceBoard(){
     rows.map((r, i) => netRaceRowHtml(r, i, total, false)).join('');
   raceBoardEl.classList.add('show');
 }
+function renderCameraPick(left){
+  if(!countdownEl) return;
+  const spectator = netSpectator;
+  const cam = CAM_MODES[camMode] || '';
+  const title = spectator ? 'Гонщики выбирают камеру — C' : 'Выберите камеру — C';
+  const camLine = spectator ? '' :
+    '<div class="cd-cam">Сейчас: ' + escapeHtml(cam) + '</div>';
+  const sec = left > 0 ? ('Отсчёт через ' + left + ' с') : 'Приготовьтесь…';
+  const html = '<div class="cd-box">' +
+    '<div class="cd-main">' + title + '</div>' +
+    camLine +
+    '<div class="cd-sub">' + sec + '</div>' +
+    '</div>';
+  if(countdownEl._pickHtml !== html){
+    countdownEl._pickHtml = html;
+    countdownEl.innerHTML = html;
+  }
+  countdownEl.classList.remove('wait');
+  countdownEl.classList.add('show', 'pick');
+}
 function renderCountdown(){
   if(!countdownEl) return;
   if(netRace.phase === 'waiting'){
-    countdownEl.textContent = 'Ожидание игроков…';
-    countdownEl.classList.add('show', 'wait'); return;
+    const left = Math.max(0, Math.ceil((netRace.waitUntil - performance.now()) / 1000));
+    renderCameraPick(left);
+    return;
   }
   if(netRace.phase === 'countdown'){
-    countdownEl.classList.remove('wait');
+    const cd = Math.max(0, Number(netRace.cdSec) || 0);
+    if(netRace.camSec > 0 && cd > 0 && netRace.countdown > cd + 0.001){
+      renderCameraPick(Math.max(1, Math.ceil(netRace.countdown - cd)));
+      return;
+    }
+    countdownEl.classList.remove('wait', 'pick');
+    countdownEl._pickHtml = '';
     const n = Math.ceil(netRace.countdown);
     countdownEl.textContent = n > 0 ? String(n) : 'СТАРТ!';
-    countdownEl.classList.add('show'); return;
+    countdownEl.classList.add('show');
+    return;
   }
-  countdownEl.classList.remove('show');
+  countdownEl.classList.remove('show', 'wait', 'pick');
+  countdownEl._pickHtml = '';
 }
 /* Итоговое табло гонки (оверлей поверх всего). */
 function showRaceResult(){
@@ -3499,6 +3655,7 @@ function showRaceResult(){
   overlayEl.classList.add('show');
   makeCollapsible(overlayEl);
   paused = true;
+  netTryReportRace(false);
 }
 function renderRaceResult(){
   const total = netRaceTotal();
@@ -4628,24 +4785,40 @@ function compAssignGrid(c, heat, opts){
   if(!heat) return '<p class="cp-muted">Заезд не назначен.</p>';
   const map = heat.assignments || {};
   const byStation = {};
-  for(const [sid, st] of Object.entries(map)) byStation[st] = Number(sid);
+  const stationOf = {};
+  for(const [sid, st] of Object.entries(map)){
+    byStation[st] = Number(sid);
+    stationOf[Number(sid)] = st;
+  }
+  const participants = heat.participants || [];
   const stations = (c.stations || COMP_STATIONS.map(id => ({ id, connected:false })));
   const rows = stations.map(s => {
     const sid = byStation[s.id] || 0;
+    const options = ['<option value="0">— свободно —</option>'].concat(
+      participants.map(pid => {
+        const n = Number(pid);
+        const at = stationOf[n];
+        return '<option value="' + n + '"' + (n === sid ? ' selected' : '') + '>' +
+          escapeHtml(compStudentNameById(c, n)) +
+          (at && at !== s.id ? ' (' + escapeHtml(at) + ')' : '') +
+          '</option>';
+      })).join('');
     return '<div class="cp-assign-row' + (sid ? ' filled' : '') + '">' +
       '<b>' + escapeHtml(s.id) + '</b>' +
       '<span class="cp-pc ' + (s.connected ? 'on' : 'off') + '">' +
         (s.connected ? '● подключён' : '○ нет связи') + '</span>' +
-      '<span class="cp-who">' + (sid ? escapeHtml(compStudentNameById(c, sid)) : '— свободен —') + '</span>' +
+      '<select class="cp-assign-sel" data-admin-assign="' + escapeHtml(s.id) + '" data-heat-id="' + Number(heat.id) + '"' +
+        (s.connected ? '' : ' disabled title="Компьютер не подключён"') + '>' +
+        options + '</select>' +
     '</div>';
   }).join('');
   const assigned = new Set(Object.values(map).map(String));
   const freeStations = stations.filter(s => s.connected && !assigned.has(s.id));
-  const lacking = (heat.participants || []).filter(sid => !map[sid]).map(sid => compStudentNameById(c, sid));
+  const lacking = participants.filter(sid => !map[sid]).map(sid => compStudentNameById(c, sid));
   return '<div class="cp-assign">' + rows + '</div>' +
     (freeStations.length ? '<p class="cp-muted">Свободные подключённые ПК: ' + freeStations.map(s => escapeHtml(s.id)).join(', ') + '.</p>' : '') +
-    (lacking.length ? '<p class="cp-warn">Не хватает подключённых компьютеров для: ' + lacking.map(escapeHtml).join(', ') + '. Подключите их на местах и обновите.</p>' : '') +
-    '<p class="cp-hint">Перед заездом рассадите учеников по указанным компьютерам. Старт — только с этой доски.</p>';
+    (lacking.length ? '<p class="cp-warn">Не назначены на компьютеры: ' + lacking.map(escapeHtml).join(', ') + '. Выберите их в списках выше.</p>' : '') +
+    '<p class="cp-hint">Для каждого компьютера выберите ученика этого заезда. Если компьютер уже занят, участники поменяются местами. «— свободно —» освобождает компьютер.</p>';
 }
 function compResultsHtml(c, heat){
   if(!heat || !heat.results || !heat.results.length) return '<p class="cp-muted">Результатов пока нет.</p>';
@@ -4704,6 +4877,28 @@ function compStationLinks(ids){
     .sort((a, b) => stationSortKeyApp(a) - stationSortKeyApp(b));
   return list.map(id => ({ id, url: base + '/?lan&station=' + encodeURIComponent(id) }));
 }
+function compIsPicking(c){
+  if(!c || c.phase !== 'countdown') return false;
+  if(typeof c.picking === 'boolean') return c.picking;
+  return (Number(c.startsInMs) || 0) > (Number(c.countdownMs) || 5000);
+}
+function compRatingHtml(c){
+  const rows = (c && c.ratingTop) || [];
+  if(!rows.length){
+    return '<p class="cp-muted">Рейтинг ещё не накоплен: нужны рейтинговые заезды.</p>';
+  }
+  const participants = new Set(((c && c.students) || []).map(s => Number(s.id)));
+  return '<div class="cp-stand">' + rows.map(r =>
+    '<div class="cp-stand-row' + (participants.has(Number(r.user_id)) ? ' final' : '') + '">' +
+      '<b>' + Number(r.rank) + '</b>' +
+      '<span>' + escapeHtml(r.name) + (r.class_name ? ' · ' + escapeHtml(r.class_name) : '') + '</span>' +
+      '<em>' + Number(r.rating) + ' · ' + Number(r.races) + ' г.' +
+        (r.wins ? ' · ' + Number(r.wins) + ' поб.' : '') +
+        (r.provisional ? ' · новичок' : '') + '</em>' +
+    '</div>').join('') + '</div>' +
+    '<p class="cp-hint">Elo: старт 1200, K=24 (первые 5 гонок — 32). Тренировки не считаются.</p>' +
+    '<div class="cp-foot"><a class="cp-linkbtn" href="/results.html" target="_blank" rel="noopener">Полный рейтинг и история</a></div>';
+}
 function compAdminRender(c, self){
   if(!COMP_ADMIN_PAGE) return;
   document.body.classList.add('comp-admin');
@@ -4714,20 +4909,25 @@ function compAdminRender(c, self){
   compLoadTrack(c.track, false);
   const key = [
     c.phase, c.track, c.currentHeat && c.currentHeat.id, c.lastHeat && c.lastHeat.id,
+    c.rated ? 1 : 0,
     c.standings && c.standings.map(r => r.place + ':' + r.sid + ':' + (r.note || '') + ':' + (r.fin == null ? '' : r.fin)).join(','),
     c.stations && c.stations.map(s => s.id + ':' + (s.connected ? 1 : 0)).join(','),
+    c.currentHeat && JSON.stringify(c.currentHeat.assignments || {}),
+    c.nextHeat && JSON.stringify(c.nextHeat.assignments || {}),
     compNotice, compBoardOpen,
   ].join('|');
   if(key === compRenderedKey && c.phase !== 'running' && c.phase !== 'countdown') return;
   compRenderedKey = key;
 
-  const running = c.phase === 'running' || c.phase === 'countdown';
-  const showPrep = !running || compBoardOpen;
-  const phaseLabel = compPhaseText(c.phase);
+  const inRace = c.phase === 'running' || c.phase === 'countdown';
+  const picking = compIsPicking(c);
+  const showPrep = !inRace || compBoardOpen;
+  const phaseLabel = picking ? 'Игроки выбирают камеру' : compPhaseText(c.phase);
   const current = c.currentHeat || c.activeHeat;
   const head = '<div class="cp-live-title"><span>ТУРНИР · ' + escapeHtml(c.className || 'КЛАСС') + '</span>' +
     '<b>' + escapeHtml(c.title || '') + '</b></div>' +
-    '<div class="cp-live-sub">' + escapeHtml(compTrackName(c.track)) + ' · ' + phaseLabel +
+    '<div class="cp-live-sub">' + escapeHtml(compTrackName(c.track)) + ' · ' + (c.rated ? 'РЕЙТИНГОВАЯ' : 'ТРЕНИРОВКА') +
+      ' · ' + phaseLabel +
       ' · до ' + (Number(c.heatSize) || 6) + ' в заезде' +
       (current ? ' · ' + escapeHtml(current.label) : '') + '</div>';
 
@@ -4736,8 +4936,8 @@ function compAdminRender(c, self){
   compAdminEl.innerHTML = head +
     '<div class="cp-live-rows">' + (topRows || '<div class="cp-muted">Нет участников</div>') + '</div>' +
     '<div class="cp-live-actions">' +
-      (running ? '<button type="button" data-comp="board">' + (compBoardOpen ? 'Скрыть доску' : 'Сетка и положение') + '</button>' : '') +
-      (running ? '<button type="button" data-comp="finish">■ Завершить заезд</button>' : '') +
+      (inRace ? '<button type="button" data-comp="board">' + (compBoardOpen ? 'Скрыть доску' : 'Сетка и положение') + '</button>' : '') +
+      (inRace && !picking ? '<button type="button" data-comp="finish">■ Завершить заезд</button>' : '') +
     '</div>' +
     (compNotice ? '<div class="cp-note ' + (compNoticeOk ? 'ok' : 'err') + '">' + escapeHtml(compNotice) + '</div>' : '');
 
@@ -4755,6 +4955,11 @@ function compAdminRender(c, self){
       '</div>' +
       '<div class="cp-track"><label>Трасса: <select id="cpTrack"' + (c.startedOnce ? ' disabled' : '') + '>' + compRaceOptionsHtml(c) + '</select></label>' +
         (c.startedOnce ? '<span class="cp-muted">Трасса зафиксирована после первого заезда</span>' : '') + '</div>' +
+      '<div class="cp-track"><label><input type="checkbox" id="cpRated"' + (c.rated ? ' checked' : '') +
+        (c.startedOnce ? ' disabled' : '') + '> Рейтинговая гонка</label>' +
+        '<span class="cp-muted">' + (c.startedOnce
+          ? 'Тип зафиксирован после первого заезда'
+          : 'Тренировка не влияет на рейтинг, но сохраняется в истории') + '</span></div>' +
       '<div class="cp-foot">' +
         '<button class="cp-primary" type="button" data-comp="start"' + (heat && heat.assignmentsReady ? '' : ' disabled') + '>▶ Начать заезд</button>' +
         '<button type="button" data-comp="refresh">Обновить</button>' +
@@ -4779,21 +4984,26 @@ function compAdminRender(c, self){
         '<button class="cp-danger" type="button" data-comp="close">Закрыть соревнование</button>' +
       '</div></div>';
   } else {
-    body = '<div class="cp-section"><div class="cp-kicker">ЗАЕЗД ИДЁТ</div>' +
+    body = '<div class="cp-section"><div class="cp-kicker">' + (picking ? 'ПОДГОТОВКА К СТАРТУ' : 'ЗАЕЗД ИДЁТ') + '</div>' +
       '<h3>' + escapeHtml(current ? current.label : '') + ' · ' + escapeHtml(compTrackName(c.track)) + '</h3>' +
-      '<p class="cp-muted">Трансляция — на доске наблюдателя. Ниже — сетка и текущее положение.</p>' +
+      '<p class="cp-muted">' + (picking
+        ? 'Игроки выбирают камеру кнопкой C — отсчёт начнётся автоматически.'
+        : 'Трансляция — на доске наблюдателя. Ниже — сетка и текущее положение.') + '</p>' +
       '<h3>Положение</h3>' + compStandingsHtml(c, false) +
-      '<div class="cp-foot"><button type="button" data-comp="board">Скрыть доску</button><button class="cp-danger" type="button" data-comp="finish">■ Завершить заезд</button></div></div>';
+      '<div class="cp-foot"><button type="button" data-comp="board">Скрыть доску</button>' +
+        (picking ? '' : '<button class="cp-danger" type="button" data-comp="finish">■ Завершить заезд</button>') +
+      '</div></div>';
   }
 
   compPrepEl.innerHTML = '<div class="cp-card">' +
     '<div class="cp-head"><div><div class="cp-kicker">СОРЕВНОВАНИЕ</div>' +
       '<h2>' + escapeHtml(c.title || 'Турнир') + '</h2>' +
       '<div class="cp-sub">' + escapeHtml(c.className || 'Класс') + ' · ' + escapeHtml(compFormatName(c.format)) + ' · ' + escapeHtml(compTrackName(c.track)) + ' · ' + escapeHtml(compModeName(c.mode)) + ' · ' + phaseLabel + '</div></div>' +
-      (running ? '<button type="button" class="cp-x" data-comp="board" title="Свернуть доску">✕</button>' : '') + '</div>' +
+      (inRace ? '<button type="button" class="cp-x" data-comp="board" title="Свернуть доску">✕</button>' : '') + '</div>' +
     (compNotice ? '<div class="cp-note ' + (compNoticeOk ? 'ok' : 'err') + '">' + escapeHtml(compNotice) + '</div>' : '') +
     body +
     ((c.phase === 'prep' || c.phase === 'heat_done') ? compStationPickerHtml(c) : '') +
+    '<details class="cp-details"><summary>Рейтинг</summary>' + compRatingHtml(c) + '</details>' +
     '<details class="cp-details"><summary>Текущее турнирное положение</summary>' + compStandingsHtml(c, c.phase === 'finished') + '</details>' +
     '<details class="cp-details"><summary>Турнирная сетка</summary>' + compBracketHtml(c) + '</details>' +
     '<details class="cp-details"><summary>Ссылки для компьютеров 109/110/114</summary>' +
@@ -4818,7 +5028,9 @@ function compBeginHeat(c, self){
   shadowBlob.visible = true;
   netRace.active = true;
   netRace.phase = 'countdown';
-  netRace.countdown = Math.max(0.6, (Number(c.startsInMs) || 3000) / 1000);
+  netRace.countdown = Math.max(0.6, (Number(c.startsInMs) || 15000) / 1000);
+  netRace.cdSec = Math.max(0.1, (Number(c.countdownMs) || 5000) / 1000);
+  netRace.camSec = Math.max(0, (Number(c.pickMs) || 10000) / 1000);
   netRace.startedAt = 0;
   netRace.selfFailed = false;
   netRace.spectatorResultShown = true;
@@ -4886,6 +5098,8 @@ function compHeatResultText(r){
 function compFinalHtml(c, self){
   const mySid = Number(self && self.sid) || 0;
   const myRow = (c.standings || []).find(r => Number(r.sid) === mySid);
+  const myStudent = (c.students || []).find(s => Number(s.id) === mySid);
+  const myRating = myStudent && myStudent.rating ? myStudent.rating : null;
   const standings = (c.standings || []).slice().sort((a, b) => a.place - b.place);
   const standRows = standings.length
     ? standings.map(r =>
@@ -4920,6 +5134,8 @@ function compFinalHtml(c, self){
         '<div class="cs-name">' + escapeHtml(myRow ? myRow.name : (c.title || c.className || 'Соревнование')) + '</div>' +
         '<div class="cs-state">' + (myRow ? 'место в соревновании' : 'Соревнование завершено') + '</div>' +
         '<div class="cs-hint">' + (myRow ? escapeHtml(c.title || '') + ' · ' : '') + escapeHtml(compTrackName(c.track)) + '</div>' +
+        (myRating ? '<div class="cs-hint">Рейтинг: <b>' + Math.round(Number(myRating.rating) || 0) + '</b>' +
+          (myRating.races ? ' · ' + Number(myRating.races) + ' рейт. гонок' : '') + '</div>' : '') +
       '</div>' +
     '</div>' +
     '<div class="cs-final-grid">' +
@@ -5095,17 +5311,19 @@ function compAdminOnState(c, self){
     netRace.active = true;
     netRace.phase = 'countdown';
     netRace.spectatorResultShown = true;
-    netRace.countdown = Math.max(0.6, (Number(c.startsInMs) || 3000) / 1000);
+    netRace.countdown = Math.max(0.6, (Number(c.startsInMs) || 15000) / 1000);
+    netRace.cdSec = Math.max(0.1, (Number(c.countdownMs) || 5000) / 1000);
+    netRace.camSec = Math.max(0, (Number(c.pickMs) || 10000) / 1000);
     renderCountdown();
   } else if(c.phase === 'running'){
     netRace.active = true;
     netRace.phase = 'running';
     netRace.spectatorResultShown = true;
     if(!netRace.startedAt) netRace.startedAt = performance.now();
-    if(countdownEl) countdownEl.classList.remove('show');
+    if(countdownEl) countdownEl.classList.remove('show', 'pick', 'wait');
   } else {
     netRace.phase = 'done';
-    if(countdownEl) countdownEl.classList.remove('show');
+    if(countdownEl) countdownEl.classList.remove('show', 'pick', 'wait');
   }
   compAdminRender(c, self);
 }
@@ -5164,6 +5382,22 @@ function compAdminChange(e){
   if(e.target && e.target.id === 'cpTrack'){
     relaySend({ t:'comp_set_track', track: e.target.value });
     compNotice = '';
+    return;
+  }
+  if(e.target && e.target.id === 'cpRated'){
+    relaySend({ t:'comp_set_rated', rated: !!e.target.checked });
+    compNotice = '';
+    return;
+  }
+  const sel = e.target && e.target.closest ? e.target.closest('select[data-admin-assign]') : null;
+  if(sel){
+    if(!relayReady){ compAdminNotice('Релей не подключён. Проверьте, что вкладка релея открыта.', false); return; }
+    relaySend({
+      t: 'comp_assign',
+      heatId: Number(sel.dataset.heatId) || 0,
+      station: sel.dataset.adminAssign || '',
+      sid: Number(sel.value) || 0,
+    });
   }
 }
 function compInitUi(){
@@ -7207,10 +7441,19 @@ function animate(){
         netRace.startedAt = performance.now();
         renderCountdown();
         netRaceSendState(true);
+        if(netRaceIsHost() && !netIsComp()){
+          if(netRace.reportTimer) clearTimeout(netRace.reportTimer);
+          const limit = (LEVELS[currentLevelIndex] && LEVELS[currentLevelIndex].timeLimit) || 180;
+          netRace.reportTimer = setTimeout(() => netTryReportRace(true), (limit + 15) * 1000);
+        }
       }
     } else if(performance.now() > netRace.waitUntil){
       netRaceGo();   /* хост — по готовности/таймауту; гость — аварийный таймаут */
+    } else {
+      renderCountdown();   /* окно выбора камеры: секунды и текущий режим */
     }
+    /* До старта физика стоит, но камеру (C) уже можно выбирать. */
+    if(!netSpectator && !netRoom.compBlocked){ updateCamera(dt); updateCameraFov(); }
   }
   if(!paused && !frozen && !netSpectator && !netRoom.compBlocked){ updatePhysics(dt); updateLevel(dt); }
   if(netSpectator){

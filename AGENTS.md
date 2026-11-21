@@ -125,10 +125,15 @@
    - `station.html` + `station.js` — разовая настройка метки компьютера
      `R109-xx`/`R110-xx`/`R114-xx` для соревнования (сохраняет
      `fly-lan-station` в localStorage);
+   - `results.html` + `results.js` + `results.css` — рейтинг и история
+     (на сайте — после входа; на релее — локальный архив);
    - `three.module.min.js` — локальная копия three.js r160 (670 КБ);
      не редактировать, не заменять на CDN.
-   - `api/signal/*.php` — тонкие фронт-контроллеры, зовущие `../app` (см. `_bootstrap.php`).
-   - `server/` (снаружи `public/`) — PHP-код сигналинга + `AuthClient`; деплоится в `../app`.
+   - `api/signal/*.php` — тонкие фронт-контроллеры, зовущие `../app` (см. `_bootstrap.php`);
+   - `api/results/*.php` — ingest/report/leaderboard/history, зовут `../app`;
+   - `server/` (снаружи `public/`) — PHP-код сигналинга, архива результатов
+     (`lib/rating.php`, `lib/results.php`, `api/results/*`) + `AuthClient`;
+     деплоится в `../app`.
 2. **Никаких inline `<style>`/`<script>`, importmap и внешних CDN** —
    CSP сервера строгая (`script-src/style-src 'self'`); inline-код заблокируется
    и сломает страницу в проде. three.js импортируется относительным путём
@@ -189,6 +194,11 @@ AGENTS.md               # этот файл
 `/var/www/fly.nayanovaacademy.ru/app` и `.../data` рядом с `public/`, владелец
 `deploy:www-data`; `data/` — на запись PHP-FPM (`signaling.db`, переживает деплой).
 У пользователя `deploy` нет прав создавать каталоги в `/var/www`.
+Для синхронизации результатов создайте токен `.../data/results_token`
+(случайная строка, владелец `www-data:www-data`, права 640) и передайте тот же
+токен релею через `FLY_SYNC_TOKEN` (или `relay/data/sync-token`). Без токена
+релей работает с локальным архивом и рейтингом, центральный рейтинг не
+обновляется.
 
 ## 🛠 Команды (Windows PowerShell)
 
@@ -291,6 +301,10 @@ AGENTS.md               # этот файл
    (`GROUND_REST + forestTerrain`); при старте борта стоят рядом, а не в одной точке.
    `loadLevel()` сбрасывает дрон в `lv.start`, поэтому после него
    `netPlaceLocalAtSpawn()` переставляет местный борт в свой слот (и разворачивает по `lv.start.yaw`).
+   Перед стартом любой сетевой гонки — окно выбора камеры (`netRace.phase='waiting'`,
+   ~10 с): физика заморожена, но `C` переключает камеры, в оверлее показан
+   текущий режим; затем короткий отсчёт `3.2 с`. Камеру обновляет `updateCamera()`
+   прямо в цикле при `frozen`, иначе до старта она бы не переключалась.
    **Парная гонка** (`params.pair`, создаёт только админ): размер комнаты
    фиксирован `FLY_PAIR_MAX=3` (наблюдатель + 2 гонщика), хост — `spectator`.
    `params.race` (`utt1/utt2/utt5/utt4/forest`) выбирает трассу; `applyNetGame`
@@ -311,7 +325,10 @@ AGENTS.md               # этот файл
    `prep|countdown|running|heat_done|finished`, сам назначает учеников на
    выбранные подключённые станции `R109-xx/R110-xx/R114-xx` (`comp.stationIds`,
    до 6, размер заезда `comp.heatSize = min(6, число ПК, число участников)`) и
-   шлёт `comp{comp,self}`.
+   шлёт `comp{comp,self}`. Перед каждым заездом — 10 с выбора камеры
+   (`COMP_CAMERA_PICK_MS`, `c.picking`/`pickLeftMs`; физика стоит, `C` работает)
+   и только затем 5 с отсчёта (`COMP_COUNTDOWN_MS`); «Завершить заезд» на доске
+   в это окно скрыта.
    `comp.format` выбирает построение сетки: `heats` (по умолчанию,
    `compBuildHeats`: группы по heatSize, проходят `floor(heatSize/число заездов)`
    лучших), `olympic` (`compBuildOlympic`: пары 1×1, победитель идёт дальше,
@@ -325,7 +342,12 @@ AGENTS.md               # этот файл
    досчитывают проходы и bye; `compFinalizeHeat` для olympic оставляет только
    победителя, для points — никого не выбивает.
    Между заездами админ меняет набор ПК сообщением
-   `comp_set_stations` (`prep`/`heat_done`). Ученик — `?station=...` (или
+   `comp_set_stations` (`prep`/`heat_done`). Перед заездом на доске админа
+   у каждого ПК есть выпадающий список участников **текущего заезда**
+   (`comp_assign {heatId,station,sid}`): выбор занятого ПК меняет двух
+   участников местами, «— свободно —» освобождает ПК; назначения лежат в
+   `heat.assignments` (ручной режим не дозаполняется автоматически) и
+   сохраняются в `competition.json`. Ученик — `?station=...` (или
    `station.html` → localStorage `fly-lan-station`), входит без логина;
    `self.active` true только в его заезде, у незадействованного ПК
    `self.allowed=false`. В `app.js` это `compOnState()`:
@@ -341,7 +363,24 @@ AGENTS.md               # этот файл
    (`compSaveState`/`compRestoreState`, каталог в `.gitignore`); после
    перезапуска релея комната и сетка восстанавливаются, а прерванный заезд
    (`countdown/running`) сбрасывается в `prep` и запускается заново.
-   `compClose` удаляет файл состояния.
+   `compClose` удаляет только `competition.json`; архив остаётся.
+   **Рейтинг и архив**: тип турнира — «рейтинговая/тренировка»
+   (`comp.rated`, по умолчанию тренировка, меняется до первого заезда через
+   `comp_set_rated`). Каждый завершённый заезд сразу пишется в
+   `relay/data/results.json` (`relay/results.js`), дубли отсекаются по
+   `compId:heatId`; закрытый посреди заезда турнир сохраняется как DNF без
+   влияния на рейтинг. Локальный Elo (старт 1200, K=24/32, попарно по местам)
+   даёт `ratingTop`/`studentRatings` в `compPublic`; история и рейтинг —
+   страница `/results.html` и `/api/results/*` релея. При заданном
+   `FLY_SYNC_TOKEN` (или `relay/data/sync-token`) записи пачками уходят на
+   сайт в `server/api/results/ingest.php` (токен в `data/results_token`),
+   очередь — `sync-state.json`. Сетевые гонки сайта: админ включает
+   `control.rated` до старта; хост после заезда отправляет таблицу в
+   `report.php`, сервер проверяет комнату/состав и хранит все результаты,
+   Elo — только у рейтинговых. LAN-рейс без auth остаётся тренировкой
+   (результат пишется только в локальную историю релея).
+   Страница сайта `results.html` требует входа (`/api/results/leaderboard.php`,
+   `history.php`), CSP — только same-origin.
 8. **Persist ключи**: `pioneer-web-fly-cfg` (сборка), `pioneer-web-fly-mode`
    (Angle/Acro), `pioneer-web-fly-gamepad` (расклад пульта),
    `pioneer-web-fly-camtilt` (наклон камеры к БПЛА, рад),

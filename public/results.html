@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Рейтинг гонщиков · fly-web</title>
+  <link rel="stylesheet" href="results.css">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+</head>
+<body>
+  <main class="res-wrap">
+    <header class="res-head">
+      <div>
+        <div class="res-kicker">fly.nayanovaacademy.ru · симулятор БПЛА</div>
+        <h1>Рейтинг гонщиков</h1>
+        <p class="res-sub">Elo 1200 · только рейтинговые гонки · тренировки сохраняются в истории, но не меняют рейтинг.</p>
+      </div>
+      <div class="res-head-actions">
+        <button type="button" id="resRefresh" class="res-btn">Обновить</button>
+        <a class="res-btn res-ghost" href="/">На симулятор</a>
+      </div>
+    </header>
+
+    <div id="resAuth" class="res-note res-auth" hidden>
+      <b>Рейтинг доступен после входа.</b>
+      <a id="resLogin" href="#" rel="noopener">Войти через портал</a>
+      <span>или откройте страницу на релее, где архив доступен локально.</span>
+    </div>
+    <div id="resError" class="res-note res-error" hidden></div>
+    <div id="resStatus" class="res-note" hidden></div>
+
+    <section class="res-card">
+      <div class="res-card-head">
+        <h2>Общий рейтинг</h2>
+        <span id="resUpdated" class="res-muted"></span>
+      </div>
+      <div class="res-table-wrap">
+        <table class="res-table" id="resLeaderboard">
+          <thead>
+            <tr><th>#</th><th>Гонщик</th><th>Класс</th><th>Рейтинг</th><th>Гонок</th><th>Побед</th><th>Топ-3</th><th>Ср. место</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="res-card">
+      <div class="res-card-head">
+        <h2>История заездов</h2>
+        <span class="res-muted">последние 30</span>
+      </div>
+      <div id="resHistory" class="res-history"></div>
+    </section>
+  </main>
+
+  <script src="results.js" defer></script>
+</body>
+</html>

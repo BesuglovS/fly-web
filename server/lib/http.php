@@ -350,6 +350,33 @@ function flyApplyControl(PDO $db, int $roomId, int $userId, array $control, int 
         ? (int) (!empty($control['started']) ? 1 : 0)
         : (int) $room['started'];
 
+    // Рейтинговую гонку включает только администратор и только до старта.
+    if (array_key_exists('rated', $control)) {
+        if ($isAdmin && !$started && !(int) $room['started']) {
+            $params['rated'] = !empty($control['rated']) ? 1 : 0;
+        }
+    }
+
+    // На старте фиксируем состав комнаты: результаты можно прислать даже
+    // после выхода участников (для отчёта хоста).
+    if ($started && !(int) $room['started']) {
+        $rosterStmt = $db->prepare(
+            'SELECT user_id, name, slot FROM players WHERE room_id = ? ORDER BY joined_at ASC, user_id ASC'
+        );
+        $rosterStmt->execute([$roomId]);
+        $roster = [];
+        foreach ($rosterStmt->fetchAll() as $row) {
+            $roster[] = [
+                'user_id' => (int) $row['user_id'],
+                'name' => (string) $row['name'],
+                'slot' => (int) $row['slot'],
+                'role' => ($isSpectate && (int) $row['user_id'] === (int) $room['host_user_id'])
+                    ? 'spectator' : 'racer',
+            ];
+        }
+        $params['roster'] = $roster;
+    }
+
     $title = (string) $room['title'];
     if (array_key_exists('title', $control)) {
         $t = flySanitizeTitle((string) $control['title']);

@@ -431,4 +431,9 @@ AGENTS.md               # этот файл
   нельзя на неё ссылаться при module-init (использовать `getElementById` локально);
 - Gamepad API: 2 устройства от одного пульта (дубль-интерфейс) — нужен
   автовыбор «живого» + ручной селектор;
+- SQLite `signaling.db` нельзя открывать на запись от `deploy` (например,
+  `sqlite3` без `-readonly`): SQLite создаёт `signaling.db-wal`/`-shm` с
+  владельцем `deploy`, и PHP-FPM `www-data` получает 500 на записи. Смотреть —
+  `sqlite3 -readonly` или от `www-data`; при инциденте — `chmod 664` на wal/shm
+  (группа `www-data`);
 - Windows PowerShell: inline-regex c backtick/каретками — писать патчи в .mjs-файлы.

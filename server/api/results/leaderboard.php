@@ -27,6 +27,7 @@ flyJson([
     'updatedAt' => time(),
     'leaderboard' => flyRatingLeaderboard($db, $limit),
     'me' => flyRatingForUser($db, (int) $user['id']),
+    'isAdmin' => flyIsAdmin($user),
     'provisionalRaces' => FLY_RATING_PROV_RACES,
 ]);
 

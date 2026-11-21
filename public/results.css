@@ -11,6 +11,7 @@
   --good:#39d353;
 }
 *{box-sizing:border-box}
+[hidden]{display:none !important}
 html,body{margin:0;min-height:100%;background:var(--bg);color:var(--txt);
   font-family:"Segoe UI",system-ui,-apple-system,Arial,sans-serif}
 body{background:

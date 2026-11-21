@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Полная история результатов · fly-web</title>
+  <link rel="stylesheet" href="results.css">
+  <link rel="stylesheet" href="results-admin.css">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+</head>
+<body>
+  <main class="res-wrap">
+    <header class="res-head">
+      <div>
+        <div class="res-kicker">fly.nayanovaacademy.ru · администратор</div>
+        <h1>Полная история результатов</h1>
+        <p class="res-sub">Все сохранённые заезды: турниры и сетевые гонки, рейтинговые и тренировочные. Фильтры по классу, трассе, типу, источнику, датам и участнику.</p>
+      </div>
+      <div class="res-head-actions">
+        <button type="button" id="histRefresh" class="res-btn">Обновить</button>
+        <a class="res-btn res-ghost" href="/results.html">Рейтинг</a>
+        <a class="res-btn res-ghost" href="/">На симулятор</a>
+      </div>
+    </header>
+
+    <div id="histAuth" class="res-note res-auth" hidden>
+      <b>Нужен вход администратора.</b>
+      <a id="histLogin" href="#" rel="noopener">Войти через портал</a>
+      <span>Страница доступна только администратору auth-web.</span>
+    </div>
+    <div id="histError" class="res-note res-error" hidden></div>
+
+    <form id="histFilters" class="adm-filters">
+      <label>Класс<select id="fClass"><option value="">Все классы</option></select></label>
+      <label>Трасса<select id="fTrack"><option value="">Все трассы</option></select></label>
+      <label>Тип<select id="fRated">
+        <option value="">Все</option>
+        <option value="1">Рейтинговая</option>
+        <option value="0">Тренировка</option>
+      </select></label>
+      <label>Источник<select id="fSource">
+        <option value="">Все</option>
+        <option value="comp">Соревнование</option>
+        <option value="net">Сетевая гонка</option>
+      </select></label>
+      <label>Дата с<input type="date" id="fFrom"></label>
+      <label>Дата по<input type="date" id="fTo"></label>
+      <label>Участник<input type="search" id="fQ" placeholder="часть имени"></label>
+      <label>На странице<select id="fPer">
+        <option value="25">25</option>
+        <option value="50">50</option>
+        <option value="100">100</option>
+      </select></label>
+      <div class="adm-filter-actions">
+        <button type="submit" class="res-btn adm-primary">Показать</button>
+        <button type="button" id="histReset" class="res-btn res-ghost">Сброс</button>
+      </div>
+    </form>
+
+    <div id="histSummary" class="adm-summary"></div>
+    <div id="histList" class="res-history adm-history"></div>
+    <div id="histPager" class="adm-pager"></div>
+  </main>
+
+  <script src="results-admin.js" defer></script>
+</body>
+</html>

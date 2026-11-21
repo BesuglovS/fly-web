@@ -10,6 +10,7 @@
   const elUpdated = document.getElementById('resUpdated');
   const elLeaderboard = document.querySelector('#resLeaderboard tbody');
   const elHistory = document.getElementById('resHistory');
+  const elAdminLink = document.getElementById('resAdminLink');
 
   function escapeHtml(s){
     return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({
@@ -149,6 +150,7 @@
       const lb = await loadPair('leaderboard', 'limit=100');
       const data = lb.data || {};
       renderLeaderboard(data.leaderboard || [], lb.local, data.me || null);
+      if(elAdminLink) elAdminLink.hidden = !data.isAdmin;
       if(!lb.local && data.me){
         elStatus.hidden = false;
         elStatus.className = 'res-note res-status';

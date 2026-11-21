@@ -4897,7 +4897,7 @@ function compRatingHtml(c){
         (r.provisional ? ' · новичок' : '') + '</em>' +
     '</div>').join('') + '</div>' +
     '<p class="cp-hint">Elo: старт 1200, K=24 (первые 5 гонок — 32). Тренировки не считаются.</p>' +
-    '<div class="cp-foot"><a class="cp-linkbtn" href="/results.html" target="_blank" rel="noopener">Полный рейтинг и история</a></div>';
+    '<div class="cp-foot"><a class="cp-linkbtn" href="https://fly.nayanovaacademy.ru/results-admin.html" target="_blank" rel="noopener">Полная история на сайте</a></div>';
 }
 function compAdminRender(c, self){
   if(!COMP_ADMIN_PAGE) return;

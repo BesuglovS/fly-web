@@ -200,6 +200,157 @@ function flyResultsInsertEvent(PDO $db, array $event): array
     return ['status' => 'accepted', 'event_id' => $eventId];
 }
 
+function flyResultsEventRows(PDO $db, int $eventId): array
+{
+    $rowStmt = $db->prepare(
+        'SELECT user_id, name, class_name, place, fin, time, prog, done, failed,
+                points, rating_before, rating_after, rating_delta
+         FROM race_rows WHERE event_id = ? ORDER BY place ASC, id ASC'
+    );
+    $rowStmt->execute([$eventId]);
+    $rows = [];
+    foreach ($rowStmt->fetchAll() as $r) {
+        $rows[] = [
+            'user_id' => (int) $r['user_id'],
+            'name' => (string) $r['name'],
+            'class_name' => (string) $r['class_name'],
+            'place' => (int) $r['place'],
+            'fin' => $r['fin'] === null ? null : (float) $r['fin'],
+            'time' => (float) $r['time'],
+            'prog' => (int) $r['prog'],
+            'done' => (bool) $r['done'],
+            'failed' => (bool) $r['failed'],
+            'points' => (int) $r['points'],
+            'rating_before' => (float) $r['rating_before'],
+            'rating_after' => (float) $r['rating_after'],
+            'rating_delta' => (float) $r['rating_delta'],
+        ];
+    }
+    return $rows;
+}
+
+/** Полная история с фильтрами и пагинацией (только администратор). */
+function flyResultsAdminQuery(PDO $db, array $filters): array
+{
+    $where = [];
+    $params = [];
+
+    $class = trim((string) ($filters['class'] ?? ''));
+    if ($class !== '') {
+        $where[] = 'e.class_name = :class';
+        $params[':class'] = $class;
+    }
+    $track = trim((string) ($filters['track'] ?? ''));
+    if ($track !== '' && in_array($track, FLY_RACES, true)) {
+        $where[] = 'e.track = :track';
+        $params[':track'] = $track;
+    }
+    $rated = (string) ($filters['rated'] ?? '');
+    if ($rated === '0' || $rated === '1') {
+        $where[] = 'e.rated = :rated';
+        $params[':rated'] = (int) $rated;
+    }
+    $source = trim((string) ($filters['source'] ?? ''));
+    if (in_array($source, ['comp', 'net'], true)) {
+        $where[] = 'e.source = :source';
+        $params[':source'] = $source;
+    }
+    $from = trim((string) ($filters['from'] ?? ''));
+    if ($from !== '') {
+        $ts = strtotime($from . ' 00:00:00');
+        if ($ts !== false) {
+            $where[] = 'e.finished_at >= :from';
+            $params[':from'] = (int) $ts;
+        }
+    }
+    $to = trim((string) ($filters['to'] ?? ''));
+    if ($to !== '') {
+        $ts = strtotime($to . ' 23:59:59');
+        if ($ts !== false) {
+            $where[] = 'e.finished_at <= :to';
+            $params[':to'] = (int) $ts;
+        }
+    }
+    $q = trim((string) ($filters['q'] ?? ''));
+    if ($q !== '') {
+        $like = '%' . str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $q) . '%';
+        $where[] = 'EXISTS (SELECT 1 FROM race_rows rq WHERE rq.event_id = e.id AND rq.name LIKE :q ESCAPE \'\\\')';
+        $params[':q'] = $like;
+    }
+
+    $whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
+    $countStmt = $db->prepare('SELECT COUNT(*) FROM race_events e ' . $whereSql);
+    foreach ($params as $key => $value) {
+        $countStmt->bindValue($key, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
+    }
+    $countStmt->execute();
+    $total = (int) $countStmt->fetchColumn();
+
+    $per = (int) ($filters['per'] ?? 25);
+    if (!in_array($per, [25, 50, 100], true)) {
+        $per = 25;
+    }
+    $pages = max(1, (int) ceil($total / $per));
+    $page = max(1, min($pages, (int) ($filters['page'] ?? 1)));
+    $offset = ($page - 1) * $per;
+
+    $stmt = $db->prepare(
+        'SELECT e.* FROM race_events e ' . $whereSql .
+        ' ORDER BY e.finished_at DESC, e.id DESC LIMIT :limit OFFSET :offset'
+    );
+    foreach ($params as $key => $value) {
+        $stmt->bindValue($key, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
+    }
+    $stmt->bindValue(':limit', $per, PDO::PARAM_INT);
+    $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+    $stmt->execute();
+
+    $events = [];
+    foreach ($stmt->fetchAll() as $e) {
+        $events[] = [
+            'key' => (string) $e['record_key'],
+            'source' => (string) $e['source'],
+            'room_id' => (int) $e['room_id'],
+            'comp_id' => (string) $e['comp_id'],
+            'title' => (string) $e['title'],
+            'class_id' => (string) $e['class_id'],
+            'class_name' => (string) $e['class_name'],
+            'track' => (string) $e['track'],
+            'mode' => (string) $e['mode'],
+            'format' => (string) $e['format'],
+            'rated' => (bool) $e['rated'],
+            'finished_at' => (int) $e['finished_at'],
+            'rows' => flyResultsEventRows($db, (int) $e['id']),
+        ];
+    }
+
+    $classes = [];
+    foreach ($db->query("SELECT DISTINCT class_name FROM race_events WHERE class_name <> '' ORDER BY class_name")->fetchAll(PDO::FETCH_COLUMN) as $c) {
+        $classes[] = (string) $c;
+    }
+    $tracks = [];
+    foreach ($db->query("SELECT DISTINCT track FROM race_events WHERE track <> '' ORDER BY track")->fetchAll(PDO::FETCH_COLUMN) as $t) {
+        $tracks[] = (string) $t;
+    }
+    $sources = [];
+    foreach ($db->query("SELECT DISTINCT source FROM race_events ORDER BY source")->fetchAll(PDO::FETCH_COLUMN) as $s) {
+        $sources[] = (string) $s;
+    }
+
+    return [
+        'total' => $total,
+        'page' => $page,
+        'per' => $per,
+        'pages' => $pages,
+        'events' => $events,
+        'facets' => [
+            'classes' => $classes,
+            'tracks' => $tracks,
+            'sources' => $sources,
+        ],
+    ];
+}
+
 function flyResultsHistory(PDO $db, int $limit = 30): array
 {
     $limit = max(1, min(100, $limit));

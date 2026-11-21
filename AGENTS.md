@@ -127,6 +127,8 @@
      `fly-lan-station` в localStorage);
    - `results.html` + `results.js` + `results.css` — рейтинг и история
      (на сайте — после входа; на релее — локальный архив);
+   - `results-admin.html` + `results-admin.js` + `results-admin.css` — полная
+     история с фильтрами и пагинацией (только администратор auth-web);
    - `three.module.min.js` — локальная копия three.js r160 (670 КБ);
      не редактировать, не заменять на CDN.
    - `api/signal/*.php` — тонкие фронт-контроллеры, зовущие `../app` (см. `_bootstrap.php`);
@@ -380,7 +382,9 @@ AGENTS.md               # этот файл
    Elo — только у рейтинговых. LAN-рейс без auth остаётся тренировкой
    (результат пишется только в локальную историю релея).
    Страница сайта `results.html` требует входа (`/api/results/leaderboard.php`,
-   `history.php`), CSP — только same-origin.
+   `history.php`), CSP — только same-origin. Полная история для админов —
+   `/results-admin.html` и `/api/results/admin_history.php` (фильтры, пагинация,
+   проверка `flyIsAdmin` на сервере).
 8. **Persist ключи**: `pioneer-web-fly-cfg` (сборка), `pioneer-web-fly-mode`
    (Angle/Acro), `pioneer-web-fly-gamepad` (расклад пульта),
    `pioneer-web-fly-camtilt` (наклон камеры к БПЛА, рад),

@@ -349,7 +349,12 @@ AGENTS.md               # этот файл
    (`comp_assign {heatId,station,sid}`): выбор занятого ПК меняет двух
    участников местами, «— свободно —» освобождает ПК; назначения лежат в
    `heat.assignments` (ручной режим не дозаполняется автоматически) и
-   сохраняются в `competition.json`. Ученик — `?station=...` (или
+   сохраняются в `competition.json`. **Постоянные места**: если участников не
+   больше, чем компьютеров, `comp.seatMap` (sid → ПК) закрепляет ученика за его
+   ПК на весь турнир (`compRememberSeats` при старте заезда, авто-распределение
+   `compPreviewAssignments` берёт прежние места), ручная пересадка меняет
+   владельцев местами; карта сохраняется в `competition.json`. Ученик —
+   `?station=...` (или
    `station.html` → localStorage `fly-lan-station`), входит без логина;
    `self.active` true только в его заезде, у незадействованного ПК
    `self.allowed=false`. В `app.js` это `compOnState()`:

@@ -223,6 +223,7 @@ function compStateSnapshot() {
       createdAt: comp.createdAt,
       stationIds: (comp.stationIds || STATIONS).slice(),
       heatSize: Number(comp.heatSize) || COMP_MAX,
+      seatMap: Object.assign({}, comp.seatMap || {}),
       students: comp.students.map((s) => ({
         id: Number(s.id),
         name: String(s.name),
@@ -423,6 +424,7 @@ function compRestoreState() {
     heatSize,
     students,
     rounds,
+    seatMap: {},
     currentHeatId: Number(saved.currentHeatId) || 0,
     nextHeatId: Number(saved.nextHeatId) || 0,
     activeHeatId: Number(saved.activeHeatId) || 0,
@@ -435,6 +437,19 @@ function compRestoreState() {
     phaseTimer: null,
     heatTimer: null,
   };
+  /* Постоянные места участников: ученик остаётся за своим ПК между заездами. */
+  if (saved.seatMap && typeof saved.seatMap === 'object') {
+    const allowed = new Set(comp.stationIds);
+    const taken = new Set();
+    for (const [rawSid, rawStation] of Object.entries(saved.seatMap)) {
+      const sid = Number(rawSid);
+      const station = sanitizeStation(rawStation);
+      if (!seen.has(sid) || !station || !allowed.has(station) || taken.has(station)) continue;
+      comp.seatMap[sid] = station;
+      taken.add(station);
+    }
+  }
+
   compHeatSeq = Math.max(compHeatSeq, maxHeatId);
   compResolveAdvances();
   compSkipEmptyLaterHeats();
@@ -929,6 +944,38 @@ function compSkipEmptyLaterHeats() {
 function compAllHeatsDone() {
   return compAllHeats().every((h) => h.status === 'done');
 }
+/* ─── Постоянные места: участник сидит за своим ПК во всех заездах ─── */
+/* Компьютеров, выделенных соревнованию (в т.ч. временно отключённых). */
+function compSeatCount() {
+  if (!comp) return 0;
+  const ids = Array.isArray(comp.stationIds) && comp.stationIds.length
+    ? comp.stationIds : STATIONS;
+  return ids.length;
+}
+/* Места имеет смысл закреплять, когда участников не больше, чем компьютеров:
+   каждому ученику хватает отдельного ПК на весь турнир. */
+function compSeatsStable() {
+  return !!comp && comp.students.length <= compSeatCount();
+}
+/* Запомнить, кто за каким ПК сидел в заезде. При ручной пересадке занятый ПК
+   меняет владельцев местами, чтобы постоянные места не конфликтовали. */
+function compRememberSeats(assignments) {
+  if (!comp || !assignments) return;
+  const seats = Object.assign({}, comp.seatMap || {});
+  for (const [rawSid, rawStation] of Object.entries(assignments)) {
+    const sid = Number(rawSid);
+    const station = sanitizeStation(rawStation);
+    if (!sid || !station) continue;
+    const prevStation = sanitizeStation(seats[sid]);
+    const holder = Object.keys(seats).find((other) => Number(other) !== sid && seats[other] === station);
+    if (holder != null) {
+      if (prevStation) seats[holder] = prevStation;
+      else delete seats[holder];
+    }
+    seats[sid] = station;
+  }
+  comp.seatMap = seats;
+}
 /* Предварительное назначение учеников на подключённые ПК (до старта).
    Если админ уже расставил участников вручную (heat.assignments), уважаем
    его выбор: недостающие места не заполняем автоматически, пока он сам
@@ -951,9 +998,26 @@ function compPreviewAssignments(heat) {
         }
       });
     } else {
-      heat.participants.forEach((sid, i) => {
-        if (connected[i]) map[sid] = connected[i].id;
-        else missing.push(sid);
+      const used = new Set();
+      const seats = compSeatsStable() ? (comp.seatMap || {}) : {};
+      /* Сначала — прежние места участников этого заезда. */
+      heat.participants.forEach((sid) => {
+        const st = sanitizeStation(seats[sid]);
+        if (st && !used.has(st) && connected.some((s) => s.id === st)) {
+          map[sid] = st;
+          used.add(st);
+        }
+      });
+      /* Остальным — свободные компьютеры по порядку. */
+      heat.participants.forEach((sid) => {
+        if (map[sid]) return;
+        const free = connected.find((s) => !used.has(s.id));
+        if (free) {
+          map[sid] = free.id;
+          used.add(free.id);
+        } else {
+          missing.push(sid);
+        }
       });
     }
   }
@@ -1555,6 +1619,7 @@ function compCreate(adminClient, msg) {
     heatSize,
     students,
     rounds: [],
+    seatMap: {},
     currentHeatId: 0,
     nextHeatId: 0,
     activeHeatId: 0,
@@ -1644,6 +1709,7 @@ function compStartHeat(adminClient) {
     }
   });
   heat.assignments = assignments;
+  compRememberSeats(assignments);
   heat.live = {};
   heat.results = [];
   heat.status = 'running';
@@ -1857,6 +1923,12 @@ function compSetStations(adminClient, rawStations) {
     }
   }
   comp.stationIds = ids;
+  /* Места учеников за снятыми компьютерами больше не актуальны. */
+  const seatMap = {};
+  for (const [sid, station] of Object.entries(comp.seatMap || {})) {
+    if (ids.indexOf(station) >= 0) seatMap[sid] = station;
+  }
+  comp.seatMap = seatMap;
   compSaveState();
   for (const c of clients.values()) {
     if (c.station && ids.indexOf(c.station) >= 0) compTryJoin(c, true);

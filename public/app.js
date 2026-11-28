@@ -2193,7 +2193,6 @@ const compSetup = {
   present: new Set(),
   participantMeta: new Map(),
   stations: new Set(DEFAULT_STATIONS),
-  initializedSelection: false,
   title: '',
   track: 'utt1',
   mode: 'angle',
@@ -2206,6 +2205,9 @@ const compSetup = {
   loaded: false,
   notice: '',
 };
+/* Псевдогруппа для участников с учётной записью, но без класса (нет ни одной группы). */
+const COMP_NO_CLASS_ID = '__none__';
+const COMP_NO_CLASS_NAME = 'Без класса';
 function compGenKey(){
   return 'fly-' + Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 6);
 }
@@ -2249,6 +2251,18 @@ function compSetupUserById(id){
 }
 function compSetupStudentsForGroup(groupId){
   if(!groupId) return [];
+  if(String(groupId) === COMP_NO_CLASS_ID){
+    const memberIds = new Set(compSetup.memberships.map(m => Number(m.user_id)));
+    return compSetup.users
+      .filter(u => !memberIds.has(Number(u.id)))
+      .map(u => ({
+        id: Number(u.id),
+        name: u.display_name || u.login || ('Ученик ' + u.id),
+        groupId: COMP_NO_CLASS_ID,
+        className: COMP_NO_CLASS_NAME,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  }
   const g = compSetup.groups.find(x => String(x.id) === String(groupId));
   const className = g ? g.name : '';
   const ids = new Set();
@@ -2273,7 +2287,7 @@ function compSetupParticipantMeta(id){
     const found = compSetupStudentsForGroup(g.id).find(s => s.id === Number(id));
     if(found) return { groupId: String(g.id), className: g.name };
   }
-  return { groupId: '', className: 'Без класса' };
+  return { groupId: '', className: COMP_NO_CLASS_NAME };
 }
 function compSetupParticipants(){
   const out = [];
@@ -2285,7 +2299,7 @@ function compSetupParticipants(){
     out.push({
       id,
       name: user.display_name || user.login || ('Ученик ' + id),
-      className: meta.className || 'Без класса',
+      className: meta.className || COMP_NO_CLASS_NAME,
     });
   }
   out.sort((a, b) => a.className.localeCompare(b.className, 'ru')
@@ -2305,7 +2319,7 @@ function compSetupSetParticipant(id, on, meta){
 function compSetupSelectedClassNames(){
   const names = new Set();
   for(const p of compSetupParticipants()){
-    if(p.className && p.className !== 'Без класса') names.add(p.className);
+    if(p.className && p.className !== COMP_NO_CLASS_NAME) names.add(p.className);
   }
   return Array.from(names);
 }
@@ -2319,13 +2333,14 @@ function compSetupStationList(){
 function compSetupSelectGroup(groupId){
   compSetup.groupId = String(groupId || '');
   compSetup.notice = '';
-  const g = compSetup.groups.find(x => String(x.id) === String(groupId));
-  if(g && (!compSetup.title || compSetup.title.indexOf('Соревнование · ') === 0)) {
-    compSetup.title = 'Соревнование · ' + g.name;
+  const name = compSetupGroupName();
+  if(name && (!compSetup.title || compSetup.title.indexOf('Соревнование · ') === 0)) {
+    compSetup.title = 'Соревнование · ' + name;
   }
   renderCompSetup();
 }
 function compSetupGroupName(){
+  if(String(compSetup.groupId) === COMP_NO_CLASS_ID) return COMP_NO_CLASS_NAME;
   const g = compSetup.groups.find(x => String(x.id) === String(compSetup.groupId));
   return g ? g.name : '';
 }
@@ -2361,7 +2376,7 @@ function compSetupInstructions(key, relay){
         '<span class="cp-muted">Linux/macOS: <code>ADMIN_KEY=' + escapeHtml(key) + ' npm start</code></span>' +
       '</li>' +
       '<li>Разрешите в брандмауэре порт <b>8080</b> (TCP).</li>' +
-      '<li>На каждом выбранном компьютере класса откройте свою ссылку из списка ниже.</li>' +
+      '<li>На каждом выбранном компьютере аудитории откройте свою ссылку из списка ниже.</li>' +
       '<li>Вернитесь сюда и нажмите «Создать и открыть доску». Ученикам логин не нужен.</li>' +
     '</ol>' +
     '<p class="cp-muted">Адрес релея: <b>' + escapeHtml(relay || '—') + '</b>. Проверка: <code>http://' +
@@ -2411,7 +2426,7 @@ function compSetupSummary(){
   const total = participants.length;
   const stationCount = compSetupStationList().length;
   const part = document.getElementById('cpPartSummary');
-  if(part) part.textContent = 'В классе: ' + selected + ' / ' + students.length + ' · всего: ' + total;
+  if(part) part.textContent = 'В группе: ' + selected + ' / ' + students.length + ' · всего: ' + total;
   const st = document.getElementById('cpStSummary');
   if(st) st.textContent = 'Компьютеры: ' + stationCount + ' / 6';
   const hint = document.getElementById('cpHeatHint');
@@ -2482,8 +2497,9 @@ function renderCompSetup(){
     document.getElementById('cpBack').addEventListener('click', ()=>{ compSetupOpen = false; renderNetBody(); });
     return;
   }
-  if(!compSetup.groups.length){
-    netStepsEl.innerHTML = '<p class="net-step">В auth-web не найдено групп/классов. Проверьте, что вы вошли как администратор.</p>' +
+  const noClassStudents = compSetupStudentsForGroup(COMP_NO_CLASS_ID);
+  if(!compSetup.groups.length && !noClassStudents.length){
+    netStepsEl.innerHTML = '<p class="net-step">В auth-web не найдено ни классов, ни пользователей без класса. Проверьте, что вы вошли как администратор.</p>' +
       '<div class="gp-btns net-row"><button type="button" id="cpReload">🔄 Повторить</button>' +
       '<button type="button" id="cpBack">← Назад</button></div>';
     document.getElementById('cpReload').addEventListener('click', compLoadClasses);
@@ -2498,12 +2514,16 @@ function renderCompSetup(){
   const stationIds = compSetupStationList();
   const groupOptions = compSetup.groups.map(g =>
     '<option value="' + escapeHtml(g.id) + '"' + (String(g.id) === String(compSetup.groupId) ? ' selected' : '') + '>' +
-    escapeHtml(g.name) + (g.user_count != null ? ' · ' + g.user_count + ' чел.' : '') + '</option>').join('');
+    escapeHtml(g.name) + (g.user_count != null ? ' · ' + g.user_count + ' чел.' : '') + '</option>').join('') +
+    (noClassStudents.length
+      ? '<option value="' + COMP_NO_CLASS_ID + '"' + (String(compSetup.groupId) === COMP_NO_CLASS_ID ? ' selected' : '') + '>' +
+        escapeHtml(COMP_NO_CLASS_NAME) + ' · ' + noClassStudents.length + ' чел.</option>'
+      : '');
   const studentRows = students.length
     ? students.map(s =>
       '<label class="cp-student"><input type="checkbox" data-uid="' + s.id + '"' +
         (compSetup.present.has(s.id) ? ' checked' : '') + '><span>' + escapeHtml(s.name) + '</span></label>').join('')
-    : '<p class="cp-muted">В этом классе нет учеников.</p>';
+    : '<p class="cp-muted">В этой группе нет участников.</p>';
   const stationCheckbox = id =>
     '<label class="cp-student"><input type="checkbox" data-station="' + escapeHtml(id) + '"' +
       (compSetup.stations.has(id) ? ' checked' : '') + '><span>' + escapeHtml(id) + '</span></label>';
@@ -2528,12 +2548,13 @@ function renderCompSetup(){
     '<div class="cp-setup">' +
       '<div class="cp-setup-head"><div class="cp-kicker">СОРЕВНОВАНИЕ</div>' +
         '<p class="cp-muted">Выберите класс и отметьте участников. Можно переключить класс и добавить участников из нескольких классов. ' +
+        'Ученики с учётной записью, но без класса, доступны в пункте «Без класса». ' +
         'Формат турнира: заезды с отбором, олимпийская сетка 1×1 или накопление очков за несколько раундов.</p>' +
-        '<p class="cp-muted">Выбор класса работает без релея. Для заездов запустите relay по инструкции ниже и нажмите «Создать и открыть доску».</p></div>' +
+        '<p class="cp-muted">Выбор участников работает без релея. Для заездов запустите relay по инструкции ниже и нажмите «Создать и открыть доску».</p></div>' +
       (compSetup.notice ? '<div class="cp-note err">' + escapeHtml(compSetup.notice) + '</div>' : '') +
-      '<label class="cp-field">Класс<select id="cpGroup"><option value="">— выберите класс —</option>' + groupOptions + '</select></label>' +
+      '<label class="cp-field">Класс или «Без класса»<select id="cpGroup"><option value="">— выберите класс —</option>' + groupOptions + '</select></label>' +
       '<div class="cp-setup-grid">' +
-        '<label class="cp-field">Участников из класса<select id="cpCount">' + countOptions + '</select></label>' +
+        '<label class="cp-field">Участников из группы<select id="cpCount">' + countOptions + '</select></label>' +
         '<label class="cp-field">Название<input id="cpTitle" class="net-name" maxlength="60" value="' + escapeHtml(compSetup.title) + '"></label>' +
         '<label class="cp-field">Формат<select id="cpFormat">' + compFormatOptionsHtml(compSetup.format) + '</select></label>' +
         '<label class="cp-field">Тип гонки<select id="cpRatedSel">' +
@@ -2548,11 +2569,11 @@ function renderCompSetup(){
         '<label class="cp-field">Адрес релея<input id="cpRelayAddr" class="net-name" value="' + escapeHtml(compSetup.relay) + '" placeholder="' + NET_RELAY_DEFAULT + '"></label>' +
         '<label class="cp-field">Ключ ADMIN_KEY<input id="cpAdminKey" class="net-name" value="' + escapeHtml(compSetup.key) + '"></label>' +
       '</div>' +
-      '<div class="cp-present-head"><b id="cpPartSummary">В классе: ' + selected + ' / ' + students.length + ' · всего: ' + totalParticipants + '</b>' +
-        '<span><button type="button" class="net-mini" id="cpAll">Все из класса</button> ' +
-        '<button type="button" class="net-mini" id="cpNone">Никого из класса</button></span></div>' +
+      '<div class="cp-present-head"><b id="cpPartSummary">В группе: ' + selected + ' / ' + students.length + ' · всего: ' + totalParticipants + '</b>' +
+        '<span><button type="button" class="net-mini" id="cpAll">Все из группы</button> ' +
+        '<button type="button" class="net-mini" id="cpNone">Никого из группы</button></span></div>' +
       '<div class="cp-students" id="cpStudents">' + studentRows + '</div>' +
-      '<p class="cp-hint">Счётчик выбирает первых N в текущем классе; ниже состав можно изменить вручную. Для другого класса выберите его в списке.</p>' +
+      '<p class="cp-hint">Счётчик выбирает первых N в текущей группе; ниже состав можно изменить вручную. Для другой группы выберите её в списке.</p>' +
       '<div class="cp-present-head"><b id="cpClassBreakdown">' + escapeHtml(breakdown) + '</b>' +
         '<span><button type="button" class="net-mini" id="cpClearAll">Сбросить всех</button></span></div>' +
       '<div class="cp-present-head"><b id="cpStSummary">Компьютеры: ' + stationIds.length + ' / 6</b>' +
@@ -2676,14 +2697,13 @@ async function compLoadClasses(){
     compSetup.memberships = Array.isArray(md.memberships) ? md.memberships : [];
     compSetup.loaded = true;
     const first = compSetup.groups[0];
-    compSetup.groupId = first ? String(first.id) : '';
-    if(!compSetup.initializedSelection){
-      for(const s of compSetupStudents()){
-        compSetupSetParticipant(s.id, true, { groupId: s.groupId, className: s.className });
-      }
-      compSetup.initializedSelection = true;
+    const noClassStudents = compSetupStudentsForGroup(COMP_NO_CLASS_ID);
+    compSetup.groupId = first ? String(first.id) : (noClassStudents.length ? COMP_NO_CLASS_ID : '');
+    // В начале соревнования участники не отмечены — их выбирает учитель вручную.
+    if(!compSetup.title){
+      if(first) compSetup.title = 'Соревнование · ' + first.name;
+      else if(noClassStudents.length) compSetup.title = 'Соревнование · ' + COMP_NO_CLASS_NAME;
     }
-    if(first && !compSetup.title) compSetup.title = 'Соревнование · ' + first.name;
   }catch(err){
     compSetup.error = 'Не удалось загрузить классы из auth-web: ' + (err && err.message ? err.message : 'ошибка сети') +
       '. Войдите на портал и повторите.';
@@ -2749,10 +2769,11 @@ function compCreateFromSite(){
   }
   compSetup.key = String(compSetup.key).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 48) || compGenKey();
   const classNames = compSetupSelectedClassNames();
-  const groupName = (classNames.length ? classNames.join(' + ') : compSetupGroupName()) || 'Класс';
+  const noClassGroup = String(compSetup.groupId) === COMP_NO_CLASS_ID;
+  const groupName = (classNames.length ? classNames.join(' + ') : compSetupGroupName()) || COMP_NO_CLASS_NAME;
   const autoTitle = !compSetup.title || compSetup.title.indexOf('Соревнование · ') === 0;
   const title = (autoTitle ? ('Соревнование · ' + groupName) : compSetup.title).trim().slice(0, 60);
-  const classId = classNames.length > 1 ? 'mixed' : (compSetup.groupId || '');
+  const classId = noClassGroup ? '' : (classNames.length > 1 ? 'mixed' : (compSetup.groupId || ''));
   const payload = {
     title,
     classId,

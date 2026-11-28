@@ -39,8 +39,13 @@
   function sourceName(s){
     return s === 'comp' ? 'соревнование' : (s === 'net' ? 'сетевая' : (s || '—'));
   }
+  const TRACK_NAMES = {
+    utt1: 'Серпантин (UTT-1)', utt2: 'Цунами (UTT-2)', utt5: 'Спираль (UTT-5)',
+    utt4: 'Высокое напряжение (UTT-4)', forest: 'Лесная дорога',
+    city: 'Городская трасса', village: 'Деревенская дорога',
+  };
   function trackName(t){
-    return t ? t.toUpperCase() : '—';
+    return TRACK_NAMES[t] || (t ? t.toUpperCase() : '—');
   }
   function resultText(r){
     if(r.failed) return 'сход';

@@ -25,6 +25,14 @@
       return d.toLocaleString('ru-RU', { day:'2-digit', month:'2-digit', year:'2-digit', hour:'2-digit', minute:'2-digit' });
     }catch(_){ return d.toISOString().slice(0, 16).replace('T', ' '); }
   }
+  const TRACK_NAMES = {
+    utt1: 'Серпантин (UTT-1)', utt2: 'Цунами (UTT-2)', utt5: 'Спираль (UTT-5)',
+    utt4: 'Высокое напряжение (UTT-4)', forest: 'Лесная дорога',
+    city: 'Городская трасса', village: 'Деревенская дорога',
+  };
+  function trackName(t){
+    return TRACK_NAMES[t] || (t ? t.toUpperCase() : '');
+  }
   function showError(text){
     elError.hidden = false;
     elError.textContent = text;
@@ -119,7 +127,7 @@
       const title = e.title || (e.source === 'net' ? 'Сетевая гонка' : 'Заезд');
       const meta = [
         e.label || '',
-        e.track || '',
+        trackName(e.track) || '',
         fmtTime(eventDate(e)),
       ].filter(Boolean).join(' · ');
       return '<div class="res-event">' +

@@ -8,7 +8,7 @@ declare(strict_types=1);
  * Тело: { room_id, send?:[{to,type:'offer'|'answer',sdp}], control?:{...} }.
  * `control` применяется, только если вызывающий — хост комнаты:
  *   { map?, mode?, started?, title?, max?, race? }.
- * `race` — ID гоночной трассы (парная гонка): utt1/utt2/utt5/utt4/forest.
+ * `race` — ID гоночной трассы (парная гонка): utt1/utt2/utt5/utt4/forest/city/village.
  * Ответ: { room, self, participants, signals, max, maps, races, isAdmin }.
  */
 

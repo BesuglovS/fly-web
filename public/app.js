@@ -1597,6 +1597,8 @@ const NET_RACE_NAMES = {
   utt5: 'Спираль (UTT-5)',
   utt4: 'Высокое напряжение (UTT-4)',
   forest: 'Лесная дорога',
+  city: 'Городская трасса',
+  village: 'Деревенская дорога',
 };
 /* Адрес релея по умолчанию: машина в локальной сети школы. */
 const NET_RELAY_DEFAULT = '10.12.6.23:8080';
@@ -1605,27 +1607,29 @@ const NET_SPAWNS = [
   { x:-5.25, z:-2.5 }, { x:-1.75, z:-2.5 }, { x:1.75, z:-2.5 }, { x:5.25, z:-2.5 },
   { x:-5.25, z: 2.5 }, { x:-1.75, z: 2.5 }, { x:1.75, z: 2.5 }, { x:5.25, z: 2.5 },
 ];
-/* Спавн по слоту: для лесной трассы — на дороге у стартовой арки, по рельефу;
+/* Спавн по слоту: для кольцевых трасс — на дороге у стартовой арки, по рельефу;
    для плоских карт — прежняя сетка у нуля. Возвращает {x,y,z}. */
 function netInfoRaceId(info){
   return (info && info.params && info.params.race) || '';
 }
-function netInfoIsForest(info){
+function netInfoLoop(info){
   const rid = netInfoRaceId(info);
-  if(rid) return rid === 'forest';
-  return !!(info && info.map === 'forest');
+  if(rid) return TRACK_LOOPS[rid] || null;
+  if(info && info.map === 'forest') return TRACK_LOOPS.forest;
+  return null;
 }
 function netSpawn(slot){
   slot = Math.max(0, Number(slot) || 0);
-  if(netInfoIsForest(netRoom.info)){
-    const t0 = -1/80, p = forestPath(t0), tg = forestTangent(t0);
+  const loop = netInfoLoop(netRoom.info);
+  if(loop){
+    const t0 = -1/80, p = loop.path(t0), tg = loop.tangent(t0);
     const nx = tg.z, nz = -tg.x;          /* нормаль к дороге */
     const col = slot % 4, row = (slot / 4) | 0;
     const lat = -3.0 + col * 2.0;         /* поперёк дороги: -3,-1,1,3 */
     const lon = -row * 3.6;               /* второй ряд — позади старта */
     const x = p.x + nx*lat + tg.x*lon;
     const z = p.z + nz*lat + tg.z*lon;
-    return { x, z, y: GROUND_REST + forestTerrain(x, z) };
+    return { x, z, y: GROUND_REST + (loop.terrain ? loop.terrain(x, z) : 0) };
   }
   const s = NET_SPAWNS[slot] || { x:0, z:0 };
   return { x:s.x, z:s.z, y:GROUND_REST };
@@ -4124,19 +4128,20 @@ function specMapPrepare(){
     if(z < minZ) minZ = z; if(z > maxZ) maxZ = z;
   };
 
-  if(lv.raceId === 'forest'){
+  const loop = TRACK_LOOPS[lv.raceId];
+  if(loop){
     closed = true;
     for(let i = 0; i <= 240; i++){
-      const p = forestPath(i / 240);
+      const p = loop.path(i / 240);
       pts.push({ x:p.x, z:p.z });
       add(p.x, p.z);
     }
-    for(let i = 0; i < 40; i++){
-      const p = forestPath(i / 40);
-      gates.push({ x:p.x, z:p.z });
-      add(p.x, p.z);
+    for(const g of (lv.gates || [])){
+      if(!g || !Array.isArray(g.pos)) continue;
+      gates.push({ x:g.pos[0], z:g.pos[2] });
+      add(g.pos[0], g.pos[2]);
     }
-    start = forestPath(-1/80);
+    start = loop.path(-1/80);
     add(start.x, start.z);
   } else {
     const s = lv.start || { x:0, z:0 };
@@ -5414,7 +5419,12 @@ compInitUi();
    ============================================================ */
 const CAM_MODES = ['Погоня', 'Сверху', 'Фиксированная', 'FPV'];
 let camMode = 0;
-function cycleCamera(){ camMode = (camMode+1) % CAM_MODES.length; updateCamBtn(); }
+function cycleCamera(){
+  camMode = (camMode+1) % CAM_MODES.length;
+  updateCamBtn();
+  /* оверлей FPV рисуется только в FPV; при уходе из режима стираем его */
+  if(camMode !== 3 && fpvCtx) fpvCtx.clearRect(0, 0, fpvCanvas.width, fpvCanvas.height);
+}
 updateCamBtn();
 
 const camTarget = new THREE.Vector3();
@@ -5659,6 +5669,7 @@ const BOUNCE_FRIC   = 0.35;   /* потеря касательной скоро�
 const _colN = new THREE.Vector3();
 const _colT = new THREE.Vector3();
 let stadiumSolids = [];   /* AABB-коллайдеры стадиона (собирает buildStadium) */
+let trackSolids = [];     /* AABB-коллайдеры городских/деревенских построек */
 
 /* отражение скорости относительно единичной нормали n (наружу поверхности) */
 function bounceOff(n){
@@ -5751,7 +5762,8 @@ function resolveCollisions(){
   if(!lv) return;
   if(lv.obstacles) for(const o of lv.obstacles) resolveObstacle(o);
   for(const o of stadiumSolids) resolveObstacle(o);   /* борта/трибуны/мачты арены */
-  resolveForestTrees();                                /* стволы деревьев лесной трассы */
+  for(const o of trackSolids) resolveObstacle(o);     /* дома городской/деревенской трасс */
+  resolveForestTrees();                                /* стволы деревьев трасс */
   if(!lv.free){
     for(const g of lv.gates){
       if(g.done || g.type !== 'ring') continue;
@@ -6082,7 +6094,8 @@ function clearLevelRoot(){
   }
   raceAssets = null;   /* общие материалы/геометрии трасс пересоздаются на новый уровень */
   stadiumSolids = [];  /* объёмные коллайдеры стадиона пересобираются на новый уровень */
-  forestTrees = [];    /* деревья лесной трассы */
+  trackSolids = [];    /* коллайдеры городских/деревенских построек */
+  forestTrees = [];    /* деревья лесной/городской/деревенской трасс */
   forestGrid = null;
 }
 
@@ -6435,6 +6448,528 @@ function buildForest(){
   levelRoot.add(arch);
 }
 
+/* ============================================================
+   ГОРОДСКАЯ И ДЕРЕВЕНСКАЯ ТРАССЫ — аналоги «Лесной дороги»:
+   длинное замкнутое кольцо с 40 воротами. Город — асфальт,
+   кварталы домов с окнами и фонарями; деревня — грунтовка,
+   избы, заборы, поля и колодец. Обе трассы плоские.
+   ============================================================ */
+const LOOP_PATH_R = 235;      /* радиус декора/фона карты */
+
+function loopTangent(fn, t){
+  const e = 0.002, a = fn(t-e), b = fn(t+e);
+  const dx = b.x-a.x, dz = b.z-a.z, L = Math.hypot(dx, dz) || 1;
+  return { x: dx/L, z: dz/L };
+}
+function cityPath(t){
+  const a = t*Math.PI*2;
+  const r = 132 + 32*Math.sin(3*a + 0.4) + 20*Math.cos(5*a - 0.7);
+  return { x: Math.cos(a)*r, z: Math.sin(a)*r };
+}
+function villagePath(t){
+  const a = t*Math.PI*2;
+  const r = 144 + 34*Math.sin(2*a + 0.9) + 24*Math.cos(4*a + 0.2);
+  return { x: Math.cos(a)*r, z: Math.sin(a)*r };
+}
+function cityTangent(t){ return loopTangent(cityPath, t); }
+function villageTangent(t){ return loopTangent(villagePath, t); }
+
+/* Общие описания кольцевых трасс: путь, касательная, рельеф. */
+const TRACK_LOOPS = {
+  forest:  { path: forestPath,  tangent: forestTangent,  terrain: forestTerrain },
+  city:    { path: cityPath,    tangent: cityTangent,    terrain: null },
+  village: { path: villagePath, tangent: villageTangent, terrain: null },
+};
+
+function loopStart(pathFn, terrainFn){
+  const t0 = -1/80, p = pathFn(t0), tg = loopTangent(pathFn, t0);
+  return { x:p.x, y:GROUND_REST + (terrainFn ? terrainFn(p.x, p.z) : 0), z:p.z,
+           yaw: Math.atan2(tg.x, tg.z) };
+}
+function buildLoopGates(pathFn, n){
+  const gates = [];
+  for(let i = 0; i < n; i++){
+    const p = pathFn(i/n), tg = loopTangent(pathFn, i/n);
+    const clr = Math.max(4, 4 + 1.6*Math.sin(i*0.9) + 0.8*Math.sin(i*2.3));
+    gates.push({ type:'ring', pos:[p.x, GROUND_REST + clr, p.z], r:3.0,
+                 faceYaw: Math.atan2(tg.x, tg.z) });
+  }
+  return gates;
+}
+function trackLoopPoints(pathFn, n){
+  const pts = [];
+  for(let i = 0; i <= n; i++){ const p = pathFn(i/n); pts.push([p.x, p.z]); }
+  return pts;
+}
+function addSolid(x, y, z, w, h, d){
+  trackSolids.push({ pos:[x, y, z], size:[w, h, d] });
+}
+
+/* --- текстуры дорог/тротуаров/полей --- */
+function makeCityRoadTexture(){
+  const W = 128, H = 128;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  g.fillStyle = '#343a42'; g.fillRect(0, 0, W, H);
+  g.fillStyle = 'rgba(255,255,255,.055)';
+  for(let i = 0; i < 220; i++) g.fillRect(rnd()*W, rnd()*H, 1, 1);
+  g.fillStyle = 'rgba(226,232,240,.72)';
+  g.fillRect(5, 0, 3, H); g.fillRect(W - 8, 0, 3, H);
+  g.fillStyle = '#ffd23f';
+  g.fillRect(W/2 - 2, 8, 4, 44);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+function makeVillageRoadTexture(){
+  const W = 128, H = 128;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  g.fillStyle = '#8b7352'; g.fillRect(0, 0, W, H);
+  g.fillStyle = 'rgba(60,45,28,.18)';
+  for(let i = 0; i < 240; i++) g.fillRect(rnd()*W, rnd()*H, 2, 1);
+  g.fillStyle = 'rgba(70,54,34,.30)';
+  g.fillRect(W*0.29, 0, 9, H); g.fillRect(W*0.62, 0, 9, H);
+  g.fillStyle = 'rgba(196,178,140,.12)';
+  g.fillRect(W/2 - 5, 0, 10, H);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+function makePavementTexture(){
+  const W = 256, H = 256;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  g.fillStyle = '#747980'; g.fillRect(0, 0, W, H);
+  for(let i = 0; i < 1200; i++){
+    g.fillStyle = 'rgba(255,255,255,' + (0.02 + rnd()*0.04).toFixed(3) + ')';
+    g.fillRect(rnd()*W, rnd()*H, 1 + rnd()*2, 1 + rnd()*2);
+  }
+  g.strokeStyle = 'rgba(20,24,30,.20)'; g.lineWidth = 2;
+  for(let x = 0; x <= W; x += 32){ g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); }
+  for(let y = 0; y <= H; y += 32){ g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+function makeCropTexture(base, stripe){
+  const W = 128, H = 128;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  g.fillStyle = base; g.fillRect(0, 0, W, H);
+  g.fillStyle = stripe;
+  for(let y = 0; y < H; y += 16) g.fillRect(0, y + 4, W, 4);
+  g.fillStyle = 'rgba(30,50,20,.10)';
+  for(let i = 0; i < 180; i++) g.fillRect(rnd()*W, rnd()*H, 1, 2);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+function makeCityFacadeTexture(){
+  const W = 128, H = 256;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  g.fillStyle = '#4a5260'; g.fillRect(0, 0, W, H);
+  g.fillStyle = 'rgba(255,255,255,.05)';
+  for(let y = 0; y < H; y += 32) g.fillRect(0, y, W, 2);
+  const cols = 4, rows = 8, cw = W/cols, rh = H/rows;
+  for(let y = 0; y < rows; y++){
+    for(let x = 0; x < cols; x++){
+      const lit = rnd() < 0.28;
+      g.fillStyle = lit ? '#ffe6a6' : '#161d28';
+      g.fillRect(x*cw + cw*0.22, y*rh + rh*0.20, cw*0.56, rh*0.48);
+      if(lit){
+        g.fillStyle = 'rgba(255,214,120,.30)';
+        g.fillRect(x*cw + cw*0.18, y*rh + rh*0.16, cw*0.64, rh*0.56);
+      }
+    }
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+
+/* --- лента дороги вдоль замкнутого пути --- */
+function buildLoopRoad(pathFn, halfW, y, color, texture, uvScale){
+  const N = 320, verts = [], uvs = [], idx = [];
+  for(let i = 0; i <= N; i++){
+    const t = i/N, p = pathFn(t), tg = loopTangent(pathFn, t);
+    const nx = tg.z, nz = -tg.x;
+    verts.push(p.x + nx*halfW, y, p.z + nz*halfW);
+    verts.push(p.x - nx*halfW, y, p.z - nz*halfW);
+    const v = i * (uvScale || 0.35);
+    uvs.push(0, v, 1, v);
+    if(i < N){ const a = i*2; idx.push(a, a+1, a+2, a+1, a+3, a+2); }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(idx); geo.computeVertexNormals();
+  const mat = new THREE.MeshStandardMaterial({
+    color: texture ? 0xffffff : color, roughness:1, map: texture || null
+  });
+  const road = new THREE.Mesh(geo, mat);
+  road.receiveShadow = true; levelRoot.add(road);
+  return road;
+}
+
+/* --- стартовая арка (общая для городской/деревенской трасс) --- */
+function buildLoopStartArch(pathFn, terrainFn, matColor){
+  const t0 = -1/80, p = pathFn(t0), tg = loopTangent(pathFn, t0);
+  const AH = 5.5, AW = 7.6;
+  const arch = new THREE.Group();
+  const archMat = new THREE.MeshStandardMaterial({ color:matColor, roughness:.6, metalness:.3 });
+  const postGeo = new THREE.BoxGeometry(0.35, AH, 0.35);
+  for(const sx of [-1, 1]){
+    const post = new THREE.Mesh(postGeo, archMat);
+    post.position.set(sx*AW/2, AH/2, 0); post.castShadow = true; arch.add(post);
+  }
+  const beam = new THREE.Mesh(new THREE.BoxGeometry(AW + 0.35, 0.4, 0.4), archMat);
+  beam.position.y = AH; beam.castShadow = true; arch.add(beam);
+  const banner = new THREE.Mesh(
+    new THREE.PlaneGeometry(AW, 1.1),
+    new THREE.MeshBasicMaterial({ map: makeTextTexture('СТАРТ · ФИНИШ', 512, 96, '#0d1117', '#ffe066', 'bold 54px sans-serif'), transparent:true, side:THREE.DoubleSide })
+  );
+  banner.position.set(0, AH - 0.8, -0.22); banner.rotation.y = Math.PI; arch.add(banner);
+  arch.position.set(p.x, terrainFn ? terrainFn(p.x, p.z) : 0, p.z);
+  arch.rotation.y = Math.atan2(tg.x, tg.z);
+  levelRoot.add(arch);
+}
+
+/* --- деревья-инстансы для городского парка и деревни --- */
+function buildScatterTrees(pts, count, opts){
+  opts = opts || {};
+  const yFn = opts.yFn || null;
+  const rMin = (opts.rMin != null) ? opts.rMin : 22;
+  const rMax = (opts.rMax != null) ? opts.rMax : FOREST_FLAT - 32;
+  const roadClear = (opts.roadClear != null) ? opts.roadClear : 9.5;
+  const blocked = opts.blocked || null;
+  const trunkGeo = new THREE.CylinderGeometry(0.16, 0.24, 1.7, 6);
+  const leafGeo  = new THREE.ConeGeometry(opts.leafR || 1.5, opts.leafH || 2.3, 7);
+  const trunkMat = new THREE.MeshStandardMaterial({ color:opts.trunkColor || 0x5a4327, roughness:1 });
+  const leafA = new THREE.MeshStandardMaterial({ color:opts.leafA || 0x2f6d33, roughness:1 });
+  const leafB = new THREE.MeshStandardMaterial({ color:opts.leafB || 0x255227, roughness:1 });
+  const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, count);
+  const leaf1  = new THREE.InstancedMesh(leafGeo, leafA, count);
+  const leaf2  = new THREE.InstancedMesh(leafGeo, leafB, count);
+  trunks.castShadow = leaf1.castShadow = leaf2.castShadow = true;
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), tr = new THREE.Vector3();
+  let n = 0, guard = 0;
+  while(n < count && guard < count*12){
+    guard++;
+    const ang = rnd()*Math.PI*2, rad = rMin + rnd()*(rMax - rMin);
+    const x = Math.cos(ang)*rad, z = Math.sin(ang)*rad;
+    if(distToRoad(pts, x, z) < roadClear) continue;
+    if(blocked && blocked(x, z)) continue;
+    const y = yFn ? yFn(x, z) : 0;
+    const s = 0.8 + rnd()*0.9, ry = rnd()*Math.PI*2;
+    q.setFromAxisAngle(Y_AXIS, ry); sc.set(s, s, s);
+    tr.set(x, y + 0.85*s, z); m.compose(tr, q, sc); trunks.setMatrixAt(n, m);
+    tr.set(x, y + 1.9*s,  z); m.compose(tr, q, sc); leaf1.setMatrixAt(n, m);
+    tr.set(x, y + 3.0*s,  z); m.compose(tr, q, sc); leaf2.setMatrixAt(n, m);
+    forestTrees.push({ x, z, y0:y, y1:y + 4.2*s, r:1.05*s });
+    const key = Math.floor(x/FOREST_CELL) + ',' + Math.floor(z/FOREST_CELL);
+    const cell = forestGrid.get(key); if(cell) cell.push(n); else forestGrid.set(key, [n]);
+    n++;
+  }
+  trunks.count = leaf1.count = leaf2.count = n;
+  trunks.instanceMatrix.needsUpdate = leaf1.instanceMatrix.needsUpdate = leaf2.instanceMatrix.needsUpdate = true;
+  levelRoot.add(trunks); levelRoot.add(leaf1); levelRoot.add(leaf2);
+}
+
+/* --- город: кварталы, фонари, парк --- */
+function buildCityBuildings(pts){
+  const facade = makeCityFacadeTexture();
+  const tints = [0xaab2bf, 0x939dad, 0xb8b0a3, 0x8792a4, 0xc0b6a9, 0x9aa4b6];
+  const mats = tints.map(c => new THREE.MeshStandardMaterial({ map:facade, color:c, roughness:.85 }));
+  const roofMat = new THREE.MeshStandardMaterial({ color:0x3b4048, roughness:.95 });
+  const placed = [];
+  const n = 170;
+  for(let i = 0; i < n; i++){
+    const t = (i + 0.5)/n;
+    const p = cityPath(t), tg = cityTangent(t);
+    const side = (i % 2) ? 1 : -1;
+    const nx = tg.z*side, nz = -tg.x*side;
+    const off = 20 + rnd()*17;
+    const x = p.x + nx*off + tg.x*(rnd() - 0.5)*9;
+    const z = p.z + nz*off + tg.z*(rnd() - 0.5)*9;
+    const w = 8 + rnd()*10, d = 8 + rnd()*10;
+    const h = 10 + rnd()*26 + (rnd() < 0.07 ? 16 : 0);
+    if(Math.hypot(x, z) > LOOP_PATH_R - 8) continue;
+    if(distToRoad(pts, x, z) < Math.hypot(w, d)*0.5 + 12) continue;
+    if(placed.some(o => Math.abs(x - o.x) < (w + o.w)/2 + 4 &&
+                        Math.abs(z - o.z) < (d + o.d)/2 + 4)) continue;
+    placed.push({ x, z, w, d });
+    const mat = mats[(rnd()*mats.length)|0];
+    const box = new THREE.Mesh(
+      new THREE.BoxGeometry(w, h, d),
+      [mat, mat, roofMat, roofMat, mat, mat]   /* бока — фасад, верх/низ — крыша */
+    );
+    box.position.set(x, h/2, z);
+    box.castShadow = true; box.receiveShadow = true;
+    levelRoot.add(box);
+    addSolid(x, h/2, z, w, h, d);
+  }
+}
+
+function buildCityLamps(pathFn, count){
+  const poleGeo = new THREE.CylinderGeometry(0.10, 0.16, 6.2, 6);
+  const poleMat = new THREE.MeshStandardMaterial({ color:0x2b313c, roughness:.55, metalness:.45 });
+  const headGeo = new THREE.BoxGeometry(1.05, 0.24, 0.42);
+  const headMat = new THREE.MeshBasicMaterial({ color:0xffdf9a });
+  const total = count*2;
+  const poles = new THREE.InstancedMesh(poleGeo, poleMat, total);
+  const heads = new THREE.InstancedMesh(headGeo, headMat, total);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(1,1,1), tr = new THREE.Vector3();
+  let k = 0;
+  for(let i = 0; i < count; i++){
+    const t = (i + 0.5)/count, p = pathFn(t), tg = loopTangent(pathFn, t);
+    const yaw = Math.atan2(tg.x, tg.z);
+    q.setFromAxisAngle(Y_AXIS, yaw);
+    for(const side of [-1, 1]){
+      const nx = tg.z*side, nz = -tg.x*side, off = 5.3;
+      const x = p.x + nx*off, z = p.z + nz*off;
+      tr.set(x, 3.1, z); m.compose(tr, q, sc); poles.setMatrixAt(k, m);
+      tr.set(x, 6.15, z); m.compose(tr, q, sc); heads.setMatrixAt(k, m);
+      k++;
+    }
+  }
+  poles.instanceMatrix.needsUpdate = heads.instanceMatrix.needsUpdate = true;
+  levelRoot.add(poles); levelRoot.add(heads);
+}
+
+function buildCity(){
+  seed = 515151;
+  forestTrees = []; forestGrid = new Map();
+  const pts = trackLoopPoints(cityPath, 240);
+
+  /* асфальтовое поле города и тротуары */
+  const pavement = new THREE.Mesh(
+    new THREE.PlaneGeometry(LOOP_PATH_R*2, LOOP_PATH_R*2),
+    new THREE.MeshStandardMaterial({ map:makePavementTexture(), roughness:.95 })
+  );
+  pavement.material.map.repeat.set(26, 26);
+  pavement.rotation.x = -Math.PI/2; pavement.position.y = 0.02;
+  pavement.receiveShadow = true; levelRoot.add(pavement);
+
+  buildLoopRoad(cityPath, 5.6, 0.05, 0x8d949c, null, 0);
+  buildLoopRoad(cityPath, 3.8, 0.08, 0xffffff, makeCityRoadTexture(), 0.35);
+
+  buildCityBuildings(pts);
+  buildCityLamps(cityPath, 34);
+  buildScatterTrees(pts, 54, {
+    rMin:8, rMax:44, roadClear:26,
+    leafA:0x3a8244, leafB:0x2c6b36, trunkColor:0x5d4528,
+  });
+  buildLoopStartArch(cityPath, null, 0x2b313c);
+}
+
+/* --- двускатная крыша: призма с коньком вдоль Z --- */
+function makeGableRoofGeo(w, d, h){
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute([
+    -w/2, 0, -d/2,   w/2, 0, -d/2,
+    -w/2, 0,  d/2,   w/2, 0,  d/2,
+        0, h, -d/2,       0, h,  d/2,
+  ], 3));
+  geo.setIndex([
+    0, 2, 4,  2, 5, 4,      /* левый скат */
+    1, 4, 3,  3, 4, 5,      /* правый скат */
+    0, 4, 1,                /* передний фронтон */
+    2, 3, 5,                /* задний фронтон */
+  ]);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/* --- деревня: избы, заборы, поля, колодец --- */
+function buildVillageHouses(pts){
+  const wallMats = [0xd9ceb8, 0xcbb99b, 0xbfae94, 0xe2d9c6, 0xc7b49a]
+    .map(c => new THREE.MeshStandardMaterial({ color:c, roughness:.95 }));
+  const roofMats = [0x8a4b35, 0x6d4a3a, 0x7a3f31, 0x5c5148]
+    .map(c => new THREE.MeshStandardMaterial({ color:c, roughness:1 }));
+  const brickMat = new THREE.MeshStandardMaterial({ color:0x7a5a4a, roughness:1 });
+  const rects = [];
+  const n = 54;
+  for(let i = 0; i < n; i++){
+    const t = (i + 0.32)/n;
+    const p = villagePath(t), tg = villageTangent(t);
+    const side = (i % 2) ? 1 : -1;
+    const nx = tg.z*side, nz = -tg.x*side;
+    const off = 17 + rnd()*11;
+    const x = p.x + nx*off + tg.x*(rnd() - 0.5)*6;
+    const z = p.z + nz*off + tg.z*(rnd() - 0.5)*6;
+    const w = 6 + rnd()*4, d = 5 + rnd()*3.5, h = 2.8 + rnd()*1.4;
+    if(Math.hypot(x, z) > LOOP_PATH_R - 10) continue;
+    if(distToRoad(pts, x, z) < Math.hypot(w, d)*0.5 + 11) continue;
+    if(rects.some(o => Math.hypot(x - o.x, z - o.z) < o.r + Math.hypot(w, d)*0.5 + 2)) continue;
+    const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), wallMats[(rnd()*wallMats.length)|0]);
+    body.position.set(x, h/2, z);
+    body.castShadow = true; body.receiveShadow = true;
+    levelRoot.add(body);
+    const roofH = 2.2 + rnd()*1.3;
+    const roof = new THREE.Mesh(
+      makeGableRoofGeo(w*1.14, d*1.12, roofH),
+      roofMats[(rnd()*roofMats.length)|0]
+    );
+    roof.position.set(x, h, z);
+    roof.castShadow = true;
+    levelRoot.add(roof);
+    if(rnd() < 0.75){
+      const chim = new THREE.Mesh(new THREE.BoxGeometry(0.55, 1.7, 0.55), brickMat);
+      chim.position.set(x + w*0.24, h + roofH*0.72, z - d*0.18);
+      chim.castShadow = true;
+      levelRoot.add(chim);
+    }
+    addSolid(x, (h + roofH)/2, z, w, h + roofH, d);
+    rects.push({ x, z, r:Math.hypot(w, d)*0.5 + 3 });
+  }
+  return rects;
+}
+
+function buildVillageFences(){
+  const postGeo = new THREE.BoxGeometry(0.14, 1.1, 0.14);
+  const railGeo = new THREE.BoxGeometry(2.2, 0.10, 0.08);
+  const mat = new THREE.MeshStandardMaterial({ color:0x9b7a4e, roughness:1 });
+  const posts = [], rails = [];
+  const runs = 46;
+  for(let i = 0; i < runs; i++){
+    const t = (i + 0.53)/runs, p = villagePath(t), tg = villageTangent(t);
+    const side = (i % 2) ? 1 : -1;
+    const nx = tg.z*side, nz = -tg.x*side;
+    const bx = p.x + nx*9.5, bz = p.z + nz*9.5;
+    const yaw = Math.atan2(tg.x, tg.z);
+    const segs = 3 + (rnd()*4|0);
+    for(let s = 0; s < segs; s++){
+      const u = (s - (segs - 1)/2)*2.2;
+      const x = bx + tg.x*u, z = bz + tg.z*u;
+      posts.push({ x, z, yaw });
+      if(s < segs - 1){
+        const rx = x + tg.x*1.1, rz = z + tg.z*1.1;
+        rails.push({ x:rx, z:rz, yaw, y:0.55 });
+        rails.push({ x:rx, z:rz, yaw, y:0.92 });
+      }
+    }
+  }
+  const mkInst = (geo, list, isPost) => {
+    const inst = new THREE.InstancedMesh(geo, mat, list.length);
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(1,1,1), tr = new THREE.Vector3();
+    list.forEach((o, i) => {
+      q.setFromAxisAngle(Y_AXIS, o.yaw);
+      tr.set(o.x, isPost ? 0.55 : o.y, o.z);
+      m.compose(tr, q, sc); inst.setMatrixAt(i, m);
+    });
+    inst.instanceMatrix.needsUpdate = true;
+    levelRoot.add(inst);
+  };
+  mkInst(postGeo, posts, true);
+  mkInst(railGeo, rails, false);
+}
+
+function buildVillageFields(pts, houseRects){
+  const palettes = [['#8f9c45', '#a8b552'], ['#6f8f3d', '#84a34a'], ['#b09a4b', '#c7b25f']];
+  const baleGeo = new THREE.CylinderGeometry(1.05, 1.05, 1.6, 10);
+  const baleMat = new THREE.MeshStandardMaterial({ color:0xc9a84c, roughness:1 });
+  for(let i = 0; i < 14; i++){
+    const ang = rnd()*Math.PI*2;
+    const rad = (i % 2) ? (34 + rnd()*34) : (204 + rnd()*16);
+    const x = Math.cos(ang)*rad, z = Math.sin(ang)*rad;
+    const w = 20 + rnd()*24, d = 14 + rnd()*16;
+    if(Math.hypot(x, z) > LOOP_PATH_R - 12) continue;
+    if(distToRoad(pts, x, z) < Math.hypot(w, d)*0.55 + 8) continue;
+    if(houseRects && houseRects.some(o => Math.hypot(x - o.x, z - o.z) < o.r + Math.hypot(w, d)*0.55 + 2)) continue;
+    const pal = palettes[i % palettes.length];
+    const tex = makeCropTexture(pal[0], pal[1]);
+    const field = new THREE.Mesh(
+      new THREE.PlaneGeometry(w, d),
+      new THREE.MeshStandardMaterial({ map:tex, roughness:1 })
+    );
+    field.rotation.set(-Math.PI/2, 0, rnd()*Math.PI);
+    field.position.set(x, 0.02, z);
+    field.receiveShadow = true;
+    levelRoot.add(field);
+    for(let b = 0; b < 3; b++){
+      const bale = new THREE.Mesh(baleGeo, baleMat);
+      bale.rotation.z = Math.PI/2;
+      bale.rotation.y = rnd()*Math.PI;
+      bale.position.set(x + (rnd() - 0.5)*w*0.5, 1.05, z + (rnd() - 0.5)*d*0.5);
+      bale.castShadow = true;
+      levelRoot.add(bale);
+    }
+  }
+}
+
+function buildVillageCentre(){
+  /* церквушка-ориентир в центре кольца */
+  const wallMat = new THREE.MeshStandardMaterial({ color:0xd8d2c4, roughness:.95 });
+  const roofMat = new THREE.MeshStandardMaterial({ color:0x6d4a3a, roughness:1 });
+  const goldMat = new THREE.MeshStandardMaterial({ color:0xd8b44a, roughness:.45, metalness:.35 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(10, 7, 16), wallMat);
+  body.position.set(0, 3.5, 0); body.castShadow = true; body.receiveShadow = true; levelRoot.add(body);
+  addSolid(0, 3.5, 0, 10, 7, 16);
+  const roof = new THREE.Mesh(makeGableRoofGeo(11.6, 17.6, 5.2), roofMat);
+  roof.position.set(0, 7, 0); roof.castShadow = true; levelRoot.add(roof);
+  const tower = new THREE.Mesh(new THREE.BoxGeometry(5, 16, 5), wallMat);
+  tower.position.set(0, 8, -10); tower.castShadow = true; levelRoot.add(tower);
+  addSolid(0, 8, -10, 5, 16, 5);
+  const spire = new THREE.Mesh(new THREE.ConeGeometry(3.8, 8, 4), roofMat);
+  spire.position.set(0, 20, -10); spire.rotation.y = Math.PI/4; spire.castShadow = true; levelRoot.add(spire);
+  const crossV = new THREE.Mesh(new THREE.BoxGeometry(0.22, 3.2, 0.22), goldMat);
+  crossV.position.set(0, 25.2, -10); levelRoot.add(crossV);
+  const crossH = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.22, 0.22), goldMat);
+  crossH.position.set(0, 25.4, -10); levelRoot.add(crossH);
+
+  /* колодец рядом с церковью */
+  const well = new THREE.Group();
+  const ring = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.6, 1.0, 16),
+    new THREE.MeshStandardMaterial({ color:0x8d8a82, roughness:1 }));
+  ring.position.y = 0.5; ring.castShadow = true; well.add(ring);
+  const postGeo = new THREE.BoxGeometry(0.16, 2.4, 0.16);
+  const woodMat = new THREE.MeshStandardMaterial({ color:0x7b5a37, roughness:1 });
+  for(const sx of [-1, 1]){
+    const post = new THREE.Mesh(postGeo, woodMat);
+    post.position.set(sx*1.15, 1.2, 0); post.castShadow = true; well.add(post);
+  }
+  const top = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.18, 1.1), woodMat);
+  top.position.y = 2.35; top.castShadow = true; well.add(top);
+  well.position.set(9, 0, 9);
+  levelRoot.add(well);
+  addSolid(9, 0.5, 9, 3.2, 1.0, 3.2);
+}
+
+function buildVillage(){
+  seed = 771177;
+  forestTrees = []; forestGrid = new Map();
+  const pts = trackLoopPoints(villagePath, 240);
+
+  buildLoopRoad(villagePath, 6.2, 0.04, 0x6f7a48, null, 0);
+  buildLoopRoad(villagePath, 3.5, 0.07, 0xffffff, makeVillageRoadTexture(), 0.42);
+
+  const houseRects = buildVillageHouses(pts);
+  const blocked = (x, z) => {
+    for(const r of houseRects){
+      const dx = x - r.x, dz = z - r.z;
+      if(dx*dx + dz*dz < r.r*r.r) return true;
+    }
+    if(Math.hypot(x, z) < 16) return true;      /* центр — церковь/колодец */
+    return false;
+  };
+  buildScatterTrees(pts, 560, {
+    rMin:22, rMax:LOOP_PATH_R - 18, roadClear:10.5, blocked,
+    leafA:0x337a3a, leafB:0x275f2d, trunkColor:0x5b4428,
+    leafR:1.35, leafH:2.2,
+  });
+  buildVillageFences();
+  buildVillageFields(pts, houseRects);
+  buildVillageCentre();
+  buildLoopStartArch(villagePath, null, 0x4a3a2a);
+}
+
 /* --- описания уровней (возрастающая сложность) --- */
 const LEVELS = [
   {
@@ -6695,6 +7230,26 @@ const LEVELS = [
     raceId:'forest',
     timeLimit:260,
     gates: buildForestTrack(40),
+  },
+  {
+    name:'Городская трасса (40 ворот)',
+    brief:'Длинная гонка по городским кварталам: 40 ворот вдоль асфальтового кольца, между домами и фонарями. Держитесь дороги и не врезайтесь в стены.',
+    start: loopStart(cityPath, null),
+    terrain:'city',
+    race:true,
+    raceId:'city',
+    timeLimit:280,
+    gates: buildLoopGates(cityPath, 40),
+  },
+  {
+    name:'Деревенская дорога (40 ворот)',
+    brief:'Длинная гонка по деревне: 40 ворот вдоль грунтовки, мимо изб, заборов и полей. В центре — церковь и колодец.',
+    start: loopStart(villagePath, null),
+    terrain:'village',
+    race:true,
+    raceId:'village',
+    timeLimit:300,
+    gates: buildLoopGates(villagePath, 40),
   },
   {
     name:'Свободный полёт',
@@ -7105,14 +7660,17 @@ function buildStadium(lv){
 /* --- сборка сцены уровня --- */
 function buildLevelScene(lv){
   clearLevelRoot();
+  const customTrack = lv.terrain === 'forest' || lv.terrain === 'city' || lv.terrain === 'village';
   terrainFn = (lv.terrain === 'forest') ? forestTerrain : null;
   (lv.obstacles||[]).forEach(buildObstacle);
   (lv.gates||[]).forEach((g,i)=>buildGateVisual(g, !!lv.race, i));
   if(lv.terrain === 'forest') buildForest();
+  else if(lv.terrain === 'city') buildCity();
+  else if(lv.terrain === 'village') buildVillage();
   else if(lv.race) buildStadium(lv);
   else if(lv.free) buildMapDecor(cfg.map);
   else if(lv.map) buildMapDecor(lv.map, lv.gates);
-  if(lv.race && lv.terrain !== 'forest') buildRaceProps(lv);
+  if(lv.race && !customTrack) buildRaceProps(lv);
 }
 
 /* --- загрузка / перезапуск / завершение --- */

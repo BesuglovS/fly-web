@@ -43,7 +43,7 @@ const PUBDIR = path.join(__dirname, '..', 'public');
 const MAPS = ['meadow', 'city', 'canyon', 'forest'];
 const MODES = ['angle', 'acro'];
 /* Гоночные трассы: стадионные UTT и лесная. ID общие с public/app.js. */
-const RACES = ['utt1', 'utt2', 'utt5', 'utt4', 'forest', 'city', 'village'];
+const RACES = ['utt1', 'utt2', 'utt5', 'utt4', 'forest', 'city', 'village', 'quarry', 'port', 'alpine'];
 const MAX_OPTIONS = [2, 4, 6, 8];
 const MAX_HARD = 8;
 const PUBLIC_MAX = 4;                 // больше — только администратор
@@ -91,6 +91,7 @@ function sanitizeCompRounds(v) {
 const COMP_TIMEOUT = {             // страховка на случай «зависшего» заезда
   utt1: 130000, utt2: 110000, utt5: 120000, utt4: 120000,
   forest: 330000, city: 350000, village: 370000,
+  quarry: 390000, port: 350000, alpine: 410000,
 };
 /* Турнир сохраняется между перезапусками релея (каталог data/ в .gitignore). */
 const COMP_STATE_DIR = path.join(__dirname, 'data');

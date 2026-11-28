@@ -148,7 +148,7 @@ relay/
 - `join{roomId}` — подключиться;
 - `quick` — быстрая игра (в первую неполную или новая; парные комнаты пропускаются);
 - `control{map,mode,started,max,title,race?}` — управление (только хост);
-  `race` — ID трассы (`utt1/utt2/utt5/utt4/forest/city/village`);
+  `race` — ID трассы (`utt1/utt2/utt5/utt4/forest/city/village/quarry/port/alpine`);
 - `comp_create{title,classId,className,track,adminName,students[],stations[],format?,rounds?,mode?,rated?}` —
   создать соревнование (только администратор); `students` — участники из одного
   или нескольких классов, `stations` — выбранные компьютеры из аудиторий

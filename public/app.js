@@ -1599,6 +1599,9 @@ const NET_RACE_NAMES = {
   forest: 'Лесная дорога',
   city: 'Городская трасса',
   village: 'Деревенская дорога',
+  quarry: 'Каменный карьер',
+  port: 'Порт',
+  alpine: 'Зимний перевал',
 };
 /* Адрес релея по умолчанию: машина в локальной сети школы. */
 const NET_RELAY_DEFAULT = '10.12.6.23:8080';
@@ -6449,10 +6452,9 @@ function buildForest(){
 }
 
 /* ============================================================
-   ГОРОДСКАЯ И ДЕРЕВЕНСКАЯ ТРАССЫ — аналоги «Лесной дороги»:
-   длинное замкнутое кольцо с 40 воротами. Город — асфальт,
-   кварталы домов с окнами и фонарями; деревня — грунтовка,
-   избы, заборы, поля и колодец. Обе трассы плоские.
+   КОЛЬЦЕВЫЕ ТРАССЫ: город, деревня, карьер, порт, зимний перевал.
+   Длинное замкнутое кольцо с 40 воротами. Город/деревня/порт —
+   плоские, карьер и зимний перевал — с рельефом.
    ============================================================ */
 const LOOP_PATH_R = 235;      /* радиус декора/фона карты */
 
@@ -6471,14 +6473,59 @@ function villagePath(t){
   const r = 144 + 34*Math.sin(2*a + 0.9) + 24*Math.cos(4*a + 0.2);
   return { x: Math.cos(a)*r, z: Math.sin(a)*r };
 }
+function quarryPath(t){
+  const a = t*Math.PI*2;
+  const r = 150 + 28*Math.sin(2*a + 0.8) + 18*Math.cos(4*a - 0.4);
+  return { x: Math.cos(a)*r, z: Math.sin(a)*r };
+}
+function portPath(t){
+  const a = t*Math.PI*2;
+  const r = 152 + 26*Math.sin(2*a + 1.1) + 14*Math.cos(5*a - 0.2);
+  return { x: Math.cos(a)*r, z: Math.sin(a)*r };
+}
+function alpinePath(t){
+  const a = t*Math.PI*2;
+  const r = 146 + 32*Math.sin(3*a + 0.2) + 20*Math.cos(5*a + 0.9);
+  return { x: Math.cos(a)*r, z: Math.sin(a)*r };
+}
 function cityTangent(t){ return loopTangent(cityPath, t); }
 function villageTangent(t){ return loopTangent(villagePath, t); }
+function quarryTangent(t){ return loopTangent(quarryPath, t); }
+function portTangent(t){ return loopTangent(portPath, t); }
+function alpineTangent(t){ return loopTangent(alpinePath, t); }
+
+/* Карьер: ступенчатая чаша в центре и высокий борт по краю. */
+const QUARRY_R = 235;
+function quarryTerrain(x, z){
+  const r = Math.hypot(x, z);
+  const t = clamp(r/92, 0, 1);
+  const step = Math.round(t*4)/4;
+  const pit = 10*step;
+  const rim = 28*forestSmooth(92, 200, r);
+  const h = pit + rim + 1.4*Math.sin(x*0.05)*Math.cos(z*0.045)*(1 - 0.5*step);
+  return Math.max(0.2, h);
+}
+
+/* Зимний перевал: пологие снежные холмы с перепадом высот. */
+const ALPINE_R = 235, ALPINE_FLAT = 196;
+function alpineTerrain(x, z){
+  const r = Math.hypot(x, z);
+  const f = 1 - forestSmooth(ALPINE_FLAT, ALPINE_R, r);
+  const h = 20
+          + 11*Math.sin(x*0.018 + 0.4)
+          + 8.0*Math.cos(z*0.021 - 0.2)
+          + 5.0*Math.sin((x - z)*0.030);
+  return Math.max(0.25, f*h);
+}
 
 /* Общие описания кольцевых трасс: путь, касательная, рельеф. */
 const TRACK_LOOPS = {
   forest:  { path: forestPath,  tangent: forestTangent,  terrain: forestTerrain },
   city:    { path: cityPath,    tangent: cityTangent,    terrain: null },
   village: { path: villagePath, tangent: villageTangent, terrain: null },
+  quarry:  { path: quarryPath,  tangent: quarryTangent,  terrain: quarryTerrain },
+  port:    { path: portPath,    tangent: portTangent,    terrain: null },
+  alpine:  { path: alpinePath,  tangent: alpineTangent,  terrain: alpineTerrain },
 };
 
 function loopStart(pathFn, terrainFn){
@@ -6486,12 +6533,13 @@ function loopStart(pathFn, terrainFn){
   return { x:p.x, y:GROUND_REST + (terrainFn ? terrainFn(p.x, p.z) : 0), z:p.z,
            yaw: Math.atan2(tg.x, tg.z) };
 }
-function buildLoopGates(pathFn, n){
+function buildLoopGates(pathFn, n, terrainFn){
   const gates = [];
   for(let i = 0; i < n; i++){
     const p = pathFn(i/n), tg = loopTangent(pathFn, i/n);
     const clr = Math.max(4, 4 + 1.6*Math.sin(i*0.9) + 0.8*Math.sin(i*2.3));
-    gates.push({ type:'ring', pos:[p.x, GROUND_REST + clr, p.z], r:3.0,
+    const base = terrainFn ? terrainFn(p.x, p.z) : 0;
+    gates.push({ type:'ring', pos:[p.x, GROUND_REST + base + clr, p.z], r:3.0,
                  faceYaw: Math.atan2(tg.x, tg.z) });
   }
   return gates;
@@ -6594,14 +6642,15 @@ function makeCityFacadeTexture(){
   return t;
 }
 
-/* --- лента дороги вдоль замкнутого пути --- */
-function buildLoopRoad(pathFn, halfW, y, color, texture, uvScale){
+/* --- лента дороги вдоль замкнутого пути (с опорой на рельеф) --- */
+function buildLoopRoad(pathFn, halfW, y, color, texture, uvScale, terrainFn){
   const N = 320, verts = [], uvs = [], idx = [];
   for(let i = 0; i <= N; i++){
     const t = i/N, p = pathFn(t), tg = loopTangent(pathFn, t);
     const nx = tg.z, nz = -tg.x;
-    verts.push(p.x + nx*halfW, y, p.z + nz*halfW);
-    verts.push(p.x - nx*halfW, y, p.z - nz*halfW);
+    const base = (terrainFn ? terrainFn(p.x, p.z) : 0) + y;
+    verts.push(p.x + nx*halfW, base, p.z + nz*halfW);
+    verts.push(p.x - nx*halfW, base, p.z - nz*halfW);
     const v = i * (uvScale || 0.35);
     uvs.push(0, v, 1, v);
     if(i < N){ const a = i*2; idx.push(a, a+1, a+2, a+1, a+3, a+2); }
@@ -6654,9 +6703,11 @@ function buildScatterTrees(pts, count, opts){
   const trunkMat = new THREE.MeshStandardMaterial({ color:opts.trunkColor || 0x5a4327, roughness:1 });
   const leafA = new THREE.MeshStandardMaterial({ color:opts.leafA || 0x2f6d33, roughness:1 });
   const leafB = new THREE.MeshStandardMaterial({ color:opts.leafB || 0x255227, roughness:1 });
+  const snowMat = opts.snow ? new THREE.MeshStandardMaterial({ color:0xeef6fb, roughness:1 }) : null;
   const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, count);
   const leaf1  = new THREE.InstancedMesh(leafGeo, leafA, count);
   const leaf2  = new THREE.InstancedMesh(leafGeo, leafB, count);
+  const leafSnow = snowMat ? new THREE.InstancedMesh(leafGeo, snowMat, count) : null;
   trunks.castShadow = leaf1.castShadow = leaf2.castShadow = true;
   const m = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), tr = new THREE.Vector3();
   let n = 0, guard = 0;
@@ -6672,6 +6723,10 @@ function buildScatterTrees(pts, count, opts){
     tr.set(x, y + 0.85*s, z); m.compose(tr, q, sc); trunks.setMatrixAt(n, m);
     tr.set(x, y + 1.9*s,  z); m.compose(tr, q, sc); leaf1.setMatrixAt(n, m);
     tr.set(x, y + 3.0*s,  z); m.compose(tr, q, sc); leaf2.setMatrixAt(n, m);
+    if(leafSnow){
+      sc.set(s*0.76, s*0.55, s*0.76);
+      tr.set(x, y + 3.42*s, z); m.compose(tr, q, sc); leafSnow.setMatrixAt(n, m);
+    }
     forestTrees.push({ x, z, y0:y, y1:y + 4.2*s, r:1.05*s });
     const key = Math.floor(x/FOREST_CELL) + ',' + Math.floor(z/FOREST_CELL);
     const cell = forestGrid.get(key); if(cell) cell.push(n); else forestGrid.set(key, [n]);
@@ -6680,6 +6735,10 @@ function buildScatterTrees(pts, count, opts){
   trunks.count = leaf1.count = leaf2.count = n;
   trunks.instanceMatrix.needsUpdate = leaf1.instanceMatrix.needsUpdate = leaf2.instanceMatrix.needsUpdate = true;
   levelRoot.add(trunks); levelRoot.add(leaf1); levelRoot.add(leaf2);
+  if(leafSnow){
+    leafSnow.count = n; leafSnow.instanceMatrix.needsUpdate = true;
+    levelRoot.add(leafSnow);
+  }
 }
 
 /* --- город: кварталы, фонари, парк --- */
@@ -6970,6 +7029,536 @@ function buildVillage(){
   buildLoopStartArch(villagePath, null, 0x4a3a2a);
 }
 
+/* ============================================================
+   КАРЬЕР, ПОРТ, ЗИМНИЙ ПЕРЕВАЛ.
+   ============================================================ */
+function buildTrackTerrainMesh(terrainFn, radius, color, segments, texture){
+  const seg = segments || 96;
+  const geo = new THREE.PlaneGeometry(radius*2, radius*2, seg, seg);
+  geo.rotateX(-Math.PI/2);
+  const pos = geo.attributes.position;
+  for(let i = 0; i < pos.count; i++) pos.setY(i, terrainFn(pos.getX(i), pos.getZ(i)));
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
+  const mat = new THREE.MeshStandardMaterial({
+    color: texture ? 0xffffff : color, roughness:1, map: texture || null
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.receiveShadow = true;
+  levelRoot.add(mesh);
+  return mesh;
+}
+
+function buildTrackBackdrop(color, y){
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(1400, 1400),
+    new THREE.MeshStandardMaterial({ color, roughness:1 })
+  );
+  mesh.rotation.x = -Math.PI/2;
+  mesh.position.y = y;
+  levelRoot.add(mesh);
+}
+
+function makeTerrainTexture(base, dark, light, bands){
+  const W = 256, H = 256;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  g.fillStyle = base; g.fillRect(0, 0, W, H);
+  if(bands){
+    g.lineWidth = 2;
+    for(let y = 6; y < H; y += 18){
+      g.strokeStyle = 'rgba(66,52,34,.16)';
+      g.beginPath();
+      for(let x = 0; x <= W; x += 16){
+        const yy = y + Math.sin((x + y)*0.06)*3;
+        if(x) g.lineTo(x, yy); else g.moveTo(x, yy);
+      }
+      g.stroke();
+      g.strokeStyle = 'rgba(220,200,165,.10)';
+      g.beginPath();
+      for(let x = 0; x <= W; x += 16){
+        const yy = y + 5 + Math.sin((x + y)*0.05)*2;
+        if(x) g.lineTo(x, yy); else g.moveTo(x, yy);
+      }
+      g.stroke();
+    }
+  }
+  for(let i = 0; i < 900; i++){
+    g.fillStyle = (i & 1) ? dark : light;
+    const s = 1 + rnd()*2;
+    g.fillRect(rnd()*W, rnd()*H, s, s);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+
+function makeSnowRoadTexture(){
+  const W = 128, H = 128;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  g.fillStyle = '#d8e2e9'; g.fillRect(0, 0, W, H);
+  g.fillStyle = 'rgba(255,255,255,.55)';
+  for(let i = 0; i < 180; i++) g.fillRect(rnd()*W, rnd()*H, 2, 1);
+  g.fillStyle = 'rgba(110,135,155,.28)';
+  g.fillRect(W*0.26, 0, 10, H); g.fillRect(W*0.64, 0, 10, H);
+  g.fillStyle = 'rgba(255,255,255,.25)';
+  g.fillRect(W/2 - 5, 0, 10, H);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+
+function makeWaterTexture(){
+  const W = 256, H = 256;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  g.fillStyle = '#2f6f8f'; g.fillRect(0, 0, W, H);
+  g.strokeStyle = 'rgba(190,225,240,.18)'; g.lineWidth = 2;
+  for(let y = 8; y < H; y += 14){
+    g.beginPath();
+    for(let x = 0; x <= W; x += 16){
+      const yy = y + Math.sin((x + y)*0.09)*3;
+      if(x) g.lineTo(x, yy); else g.moveTo(x, yy);
+    }
+    g.stroke();
+  }
+  g.fillStyle = 'rgba(255,255,255,.08)';
+  for(let i = 0; i < 300; i++) g.fillRect(rnd()*W, rnd()*H, 2, 1);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+
+/* ---------- КАРЬЕР ---------- */
+function buildQuarryRocks(pts){
+  const count = 230;
+  const geo = new THREE.ConeGeometry(1, 1, 7);
+  const mat = new THREE.MeshStandardMaterial({ color:0x7d6c52, roughness:1 });
+  const inst = new THREE.InstancedMesh(geo, mat, count);
+  inst.castShadow = true; inst.receiveShadow = true;
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), tr = new THREE.Vector3();
+  let n = 0, guard = 0;
+  /* внешняя скальная стена вдоль трассы */
+  for(let i = 0; i < 46 && n < count; i++){
+    const t = (i + 0.5)/46;
+    const p = quarryPath(t);
+    const len = Math.hypot(p.x, p.z) || 1;
+    const off = 26 + rnd()*10;
+    const x = p.x + (p.x/len)*off, z = p.z + (p.z/len)*off;
+    if(Math.hypot(x, z) > LOOP_PATH_R - 6) continue;
+    const rx = 6 + rnd()*6, rz = 6 + rnd()*6, h = 15 + rnd()*18;
+    if(distToRoad(pts, x, z) < Math.max(rx, rz) + 6) continue;
+    const y = quarryTerrain(x, z);
+    q.setFromAxisAngle(Y_AXIS, rnd()*Math.PI*2);
+    sc.set(rx, h, rz);
+    tr.set(x, y + h/2, z);
+    m.compose(tr, q, sc); inst.setMatrixAt(n, m);
+    addSolid(x, y + h/2, z, rx*1.7, h, rz*1.7);
+    n++;
+  }
+  while(n < count && guard < count*12){
+    guard++;
+    const big = rnd() < 0.30;
+    const ang = rnd()*Math.PI*2;
+    const rad = 26 + rnd()*(LOOP_PATH_R - 40);
+    const x = Math.cos(ang)*rad, z = Math.sin(ang)*rad;
+    const rx = big ? (5 + rnd()*9) : (1.2 + rnd()*3.4);
+    const rz = big ? (5 + rnd()*9) : (1.2 + rnd()*3.4);
+    const h  = big ? (12 + rnd()*22) : (3 + rnd()*8);
+    if(distToRoad(pts, x, z) < Math.max(rx, rz) + 6) continue;
+    if(Math.hypot(x, z) > LOOP_PATH_R - 8) continue;
+    const y = quarryTerrain(x, z);
+    q.setFromAxisAngle(Y_AXIS, rnd()*Math.PI*2);
+    sc.set(rx, h, rz);
+    tr.set(x, y + h/2, z);
+    m.compose(tr, q, sc); inst.setMatrixAt(n, m);
+    addSolid(x, y + h/2, z, rx*1.7, h, rz*1.7);
+    n++;
+  }
+  inst.count = n; inst.instanceMatrix.needsUpdate = true;
+  levelRoot.add(inst);
+}
+
+function makeQuarryTruck(x, y, z, yaw, bodyMat, darkMat){
+  const g = new THREE.Group();
+  const bed = new THREE.Mesh(new THREE.BoxGeometry(4.2, 2.2, 7.2), bodyMat);
+  bed.position.y = 2.0; bed.castShadow = true; g.add(bed);
+  const cab = new THREE.Mesh(new THREE.BoxGeometry(3.4, 2.3, 2.6), bodyMat);
+  cab.position.set(0, 3.4, 2.2); cab.castShadow = true; g.add(cab);
+  const chassis = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.7, 7.8), darkMat);
+  chassis.position.y = 0.75; g.add(chassis);
+  for(const sx of [-1.7, 1.7]){
+    for(const sz of [-2.5, 2.5]){
+      const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.85, 0.5, 10), darkMat);
+      wheel.rotation.z = Math.PI/2; wheel.position.set(sx, 0.85, sz); g.add(wheel);
+    }
+  }
+  g.position.set(x, y, z); g.rotation.y = yaw;
+  levelRoot.add(g);
+  addSolid(x, y + 2.2, z, 7.2, 4.4, 7.2);
+}
+
+function makeQuarryExcavator(x, y, z, yaw, bodyMat, darkMat){
+  const g = new THREE.Group();
+  const tracks = new THREE.Mesh(new THREE.BoxGeometry(4.0, 1.2, 6.0), darkMat);
+  tracks.position.y = 0.6; tracks.castShadow = true; g.add(tracks);
+  const body = new THREE.Mesh(new THREE.BoxGeometry(3.8, 2.8, 4.4), bodyMat);
+  body.position.y = 2.6; body.castShadow = true; g.add(body);
+  const cab = new THREE.Mesh(new THREE.BoxGeometry(1.8, 2.0, 2.0), darkMat);
+  cab.position.set(-1.0, 4.1, 0.4); cab.castShadow = true; g.add(cab);
+  const boom = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.75, 8.0), bodyMat);
+  boom.position.set(1.3, 4.4, 4.2); boom.rotation.x = -0.45; boom.castShadow = true; g.add(boom);
+  const stick = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.6, 5.0), bodyMat);
+  stick.position.set(1.3, 3.1, 7.6); stick.rotation.x = 0.7; g.add(stick);
+  const bucket = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.4, 1.6), darkMat);
+  bucket.position.set(1.3, 1.5, 9.4); g.add(bucket);
+  g.position.set(x, y, z); g.rotation.y = yaw;
+  levelRoot.add(g);
+  addSolid(x, y + 2.6, z, 7.6, 5.2, 7.6);
+}
+
+function buildQuarryProps(pts){
+  const bodyMat = new THREE.MeshStandardMaterial({ color:0xd7a53a, roughness:.7, metalness:.2 });
+  const darkMat = new THREE.MeshStandardMaterial({ color:0x2b313c, roughness:.8, metalness:.3 });
+  for(let i = 0; i < 10; i++){
+    const t = (i + 0.3)/10;
+    const p = quarryPath(t), tg = quarryTangent(t);
+    const side = (i % 2) ? 1 : -1;
+    const nx = tg.z*side, nz = -tg.x*side;
+    const off = 15 + rnd()*7;
+    const x = p.x + nx*off, z = p.z + nz*off;
+    if(Math.hypot(x, z) > LOOP_PATH_R - 12) continue;
+    if(distToRoad(pts, x, z) < 13) continue;
+    const y = quarryTerrain(x, z);
+    const yaw = Math.atan2(tg.x, tg.z) + (rnd() - 0.5)*0.5;
+    if(i % 3 === 0) makeQuarryExcavator(x, y, z, yaw, bodyMat, darkMat);
+    else makeQuarryTruck(x, y, z, yaw, bodyMat, darkMat);
+  }
+}
+
+function buildQuarry(){
+  seed = 330033;
+  forestTrees = []; forestGrid = new Map();
+  const pts = trackLoopPoints(quarryPath, 240);
+  buildTrackBackdrop(0x8d7a5b, 0.15);
+  const tex = makeTerrainTexture('#8d7a5b', 'rgba(62,49,32,.22)', 'rgba(205,185,148,.12)', true);
+  tex.repeat.set(26, 26);
+  buildTrackTerrainMesh(quarryTerrain, QUARRY_R, 0x8d7a5b, 128, tex);
+  buildLoopRoad(quarryPath, 4.2, 0.12, 0xffffff, makeVillageRoadTexture(), 0.42, quarryTerrain);
+  buildQuarryRocks(pts);
+  buildQuarryProps(pts);
+  buildLoopStartArch(quarryPath, quarryTerrain, 0x4a3a2a);
+}
+
+/* ---------- ПОРТ ---------- */
+function buildPortContainers(pts){
+  const max = 240;
+  const geo = new THREE.BoxGeometry(1, 1, 1);
+  const mat = new THREE.MeshStandardMaterial({ color:0xffffff, roughness:.75, metalness:.15 });
+  const inst = new THREE.InstancedMesh(geo, mat, max);
+  inst.castShadow = true; inst.receiveShadow = true;
+  const colors = [0xc0392b, 0x2d7fb8, 0x2e8b57, 0xd9a441, 0x8e5a9e, 0x4d5a66, 0xb84a3a];
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), tr = new THREE.Vector3();
+  const col = new THREE.Color();
+  let n = 0;
+  for(let i = 0; i < 96 && n < max; i++){
+    const t = (i + 0.31)/96;
+    const p = portPath(t), tg = portTangent(t);
+    const side = (i % 2) ? 1 : -1;
+    const nx = tg.z*side, nz = -tg.x*side;
+    const off = 8.5 + rnd()*4.2;
+    const x = p.x + nx*off + tg.x*(rnd() - 0.5)*3;
+    const z = p.z + nz*off + tg.z*(rnd() - 0.5)*3;
+    if(Math.hypot(x, z) > LOOP_PATH_R - 16) continue;
+    if(distToRoad(pts, x, z) < 8) continue;
+    const along = (i % 3 === 0);
+    const cw = along ? 6.1 : 2.6;
+    const cd = along ? 2.6 : 6.1;
+    const stack = 1 + ((i*5) % 3);
+    for(let s = 0; s < stack && n < max; s++){
+      const y = 1.42 + s*2.62;
+      tr.set(x, y, z); sc.set(cw, 2.55, cd);
+      m.compose(tr, q, sc); inst.setMatrixAt(n, m);
+      col.setHex(colors[(i + s) % colors.length]);
+      inst.setColorAt(n, col);
+      addSolid(x, y, z, cw + 0.1, 2.55, cd + 0.1);
+      n++;
+    }
+  }
+  inst.count = n;
+  inst.instanceMatrix.needsUpdate = true;
+  if(inst.instanceColor) inst.instanceColor.needsUpdate = true;
+  levelRoot.add(inst);
+}
+
+function buildPortWarehouses(pts){
+  const wallMat = new THREE.MeshStandardMaterial({ color:0x9aa0a8, roughness:.9 });
+  const roofMat = new THREE.MeshStandardMaterial({ color:0x4d5560, roughness:.9 });
+  const doorMat = new THREE.MeshStandardMaterial({ color:0x2f5570, roughness:.8 });
+  for(let i = 0; i < 8; i++){
+    const t = (i + 0.42)/8;
+    const p = portPath(t), tg = portTangent(t);
+    const side = (i % 2) ? 1 : -1;
+    const nx = tg.z*side, nz = -tg.x*side;
+    const off = 15.2;
+    const x = p.x + nx*off, z = p.z + nz*off;
+    if(Math.hypot(x, z) > LOOP_PATH_R - 20) continue;
+    if(distToRoad(pts, x, z) < 13) continue;
+    const yaw = Math.atan2(tg.x, tg.z);
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(7, 6.5, 12), wallMat);
+    body.position.y = 3.25; body.castShadow = true; body.receiveShadow = true; g.add(body);
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(7.6, 0.5, 12.6), roofMat);
+    roof.position.y = 6.75; roof.castShadow = true; g.add(roof);
+    const door = new THREE.Mesh(new THREE.BoxGeometry(4.2, 4.4, 0.2), doorMat);
+    door.position.set(0, 2.2, 6.1); g.add(door);
+    g.position.set(x, 0.12, z); g.rotation.y = yaw;
+    levelRoot.add(g);
+    addSolid(x, 0.12 + 3.25, z, 12.6, 6.5, 12.6);
+  }
+}
+
+function buildPortCrane(x, z, yaw, orangeMat, darkMat){
+  const g = new THREE.Group();
+  const legGeo = new THREE.BoxGeometry(0.8, 18, 0.8);
+  const legs = [];
+  for(const lx of [-3.2, 3.2]){
+    for(const lz of [0, 11]){
+      const leg = new THREE.Mesh(legGeo, orangeMat);
+      leg.position.set(lx, 9, lz); leg.castShadow = true; g.add(leg);
+      legs.push({ lx, lz });
+    }
+  }
+  const beam = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.2, 12.6), orangeMat);
+  beam.position.set(0, 18, 5.5); beam.castShadow = true; g.add(beam);
+  const jib = new THREE.Mesh(new THREE.BoxGeometry(1.3, 1.0, 15), orangeMat);
+  jib.position.set(0, 18, 18); jib.castShadow = true; g.add(jib);
+  const counter = new THREE.Mesh(new THREE.BoxGeometry(3.4, 1.8, 4), darkMat);
+  counter.position.set(0, 17.4, -3); g.add(counter);
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(2.2, 2.0, 2.2), darkMat);
+  cabin.position.set(2.2, 16.4, 7); cabin.castShadow = true; g.add(cabin);
+  const cable = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, 18, 24), new THREE.Vector3(0, 4.5, 20)
+    ]),
+    new THREE.LineBasicMaterial({ color:0x22262c })
+  );
+  g.add(cable);
+  const hook = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.2, 1.4), darkMat);
+  hook.position.set(0, 3.9, 20); g.add(hook);
+  g.position.set(x, 0.12, z); g.rotation.y = yaw;
+  levelRoot.add(g);
+  const cs = Math.cos(yaw), sn = Math.sin(yaw);
+  for(const l of legs){
+    const wx = x + l.lx*cs + l.lz*sn;
+    const wz = z - l.lx*sn + l.lz*cs;
+    addSolid(wx, 9.12, wz, 1.3, 18, 1.3);
+  }
+}
+
+function buildPortCranes(pts){
+  const orangeMat = new THREE.MeshStandardMaterial({ color:0xd1662f, roughness:.65, metalness:.25 });
+  const darkMat = new THREE.MeshStandardMaterial({ color:0x2b313c, roughness:.8, metalness:.3 });
+  for(let i = 0; i < 4; i++){
+    const t = (i + 0.56)/4;
+    const p = portPath(t), tg = portTangent(t);
+    const side = (i % 2) ? 1 : -1;
+    const nx = tg.z*side, nz = -tg.x*side;
+    const x = p.x + nx*8.5, z = p.z + nz*8.5;
+    if(Math.hypot(x, z) > LOOP_PATH_R - 12) continue;
+    if(distToRoad(pts, x, z) < 8) continue;
+    buildPortCrane(x, z, Math.atan2(nx, nz), orangeMat, darkMat);
+  }
+}
+
+function makePortShip(x, z, yaw, hullMat, deckMat){
+  const g = new THREE.Group();
+  const hull = new THREE.Mesh(new THREE.BoxGeometry(8, 3.2, 30), hullMat);
+  hull.position.y = 1.0; hull.castShadow = true; g.add(hull);
+  const deck = new THREE.Mesh(new THREE.BoxGeometry(7.4, 0.4, 28), deckMat);
+  deck.position.y = 2.8; g.add(deck);
+  const bridge = new THREE.Mesh(new THREE.BoxGeometry(5.5, 5.0, 5.0), deckMat);
+  bridge.position.set(0, 5.2, -10); bridge.castShadow = true; g.add(bridge);
+  for(let i = 0; i < 4; i++){
+    const cont = new THREE.Mesh(new THREE.BoxGeometry(5.2, 2.4, 5.2), new THREE.MeshStandardMaterial({
+      color:[0x2d7fb8, 0xc0392b, 0xd9a441, 0x2e8b57][i], roughness:.8
+    }));
+    cont.position.set((i%2 ? 1.2 : -1.2), 4.0, -4 + (i*2.6));
+    g.add(cont);
+  }
+  g.position.set(x, 0, z); g.rotation.y = yaw;
+  levelRoot.add(g);
+}
+
+function buildPortPiers(){
+  const quayMat = new THREE.MeshStandardMaterial({ color:0x7b828a, roughness:.95 });
+  const bollardMat = new THREE.MeshStandardMaterial({ color:0x2b313c, roughness:.7 });
+  for(let i = 0; i < 6; i++){
+    const t = (i + 0.5)/6;
+    const p = portPath(t), tg = portTangent(t);
+    const nx = tg.z, nz = -tg.x;
+    const gx = p.x + nx*18, gz = p.z + nz*18;
+    if(Math.hypot(gx, gz) > LOOP_PATH_R - 14) continue;
+    const yaw = Math.atan2(nx, nz);
+    const g = new THREE.Group();
+    const pier = new THREE.Mesh(new THREE.BoxGeometry(9, 0.7, 16), quayMat);
+    pier.position.set(0, 0.35, 8); pier.receiveShadow = true; g.add(pier);
+    for(const sx of [-3.2, 0, 3.2]){
+      const bollard = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.45, 1.0, 8), bollardMat);
+      bollard.position.set(sx, 0.55, 13); g.add(bollard);
+    }
+    g.position.set(gx, 0, gz); g.rotation.y = yaw;
+    levelRoot.add(g);
+    const sx = gx + nx*14, sz = gz + nz*14;
+    if(Math.hypot(sx, sz) < LOOP_PATH_R - 8){
+      makePortShip(sx, sz, Math.atan2(tg.x, tg.z), new THREE.MeshStandardMaterial({ color:0x34495e, roughness:.8 }), new THREE.MeshStandardMaterial({ color:0x8b939c, roughness:.9 }));
+    }
+  }
+}
+
+function buildPort(){
+  seed = 880044;
+  forestTrees = []; forestGrid = new Map();
+  const pts = trackLoopPoints(portPath, 240);
+
+  const water = new THREE.Mesh(
+    new THREE.PlaneGeometry(1200, 1200),
+    new THREE.MeshStandardMaterial({ map:makeWaterTexture(), color:0x9fd0e0, roughness:.45, metalness:.15 })
+  );
+  water.material.map.repeat.set(46, 46);
+  water.rotation.x = -Math.PI/2; water.position.y = 0.02;
+  water.receiveShadow = true; levelRoot.add(water);
+
+  buildLoopRoad(portPath, 20, 0.10, 0x8d949c, null, 0);
+  buildLoopRoad(portPath, 4.2, 0.16, 0xffffff, makeCityRoadTexture(), 0.35);
+  buildPortContainers(pts);
+  buildPortWarehouses(pts);
+  buildPortCranes(pts);
+  buildPortPiers();
+  buildLoopStartArch(portPath, null, 0x2b313c);
+}
+
+/* ---------- ЗИМНИЙ ПЕРЕВАЛ ---------- */
+function buildAlpineChalets(pts){
+  const wallMats = [0xa97a4d, 0x8f633d, 0xb98b5d, 0x7d5a3c]
+    .map(c => new THREE.MeshStandardMaterial({ color:c, roughness:.95 }));
+  const roofMats = [0x3f3a36, 0x4b4038, 0x34302d]
+    .map(c => new THREE.MeshStandardMaterial({ color:c, roughness:1 }));
+  const trimMat = new THREE.MeshStandardMaterial({ color:0xe8eef3, roughness:1 });
+  const rects = [];
+  const n = 34;
+  for(let i = 0; i < n; i++){
+    const t = (i + 0.37)/n;
+    const p = alpinePath(t), tg = alpineTangent(t);
+    const side = (i % 2) ? 1 : -1;
+    const nx = tg.z*side, nz = -tg.x*side;
+    const off = 16 + rnd()*9;
+    const x = p.x + nx*off + tg.x*(rnd() - 0.5)*5;
+    const z = p.z + nz*off + tg.z*(rnd() - 0.5)*5;
+    const w = 6.5 + rnd()*3.5, d = 5.5 + rnd()*3.0, h = 3.0 + rnd()*1.4;
+    if(Math.hypot(x, z) > LOOP_PATH_R - 14) continue;
+    if(distToRoad(pts, x, z) < Math.hypot(w, d)*0.5 + 11) continue;
+    if(rects.some(o => Math.hypot(x - o.x, z - o.z) < o.r + Math.hypot(w, d)*0.5 + 2)) continue;
+    const y = alpineTerrain(x, z);
+    const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), wallMats[(rnd()*wallMats.length)|0]);
+    body.position.set(x, y + h/2, z);
+    body.castShadow = true; body.receiveShadow = true;
+    levelRoot.add(body);
+    const roofH = 2.4 + rnd()*1.2;
+    const roof = new THREE.Mesh(makeGableRoofGeo(w*1.18, d*1.14, roofH), roofMats[(rnd()*roofMats.length)|0]);
+    roof.position.set(x, y + h, z); roof.castShadow = true; levelRoot.add(roof);
+    const balcony = new THREE.Mesh(new THREE.BoxGeometry(w*0.9, 0.25, 0.8), trimMat);
+    balcony.position.set(x, y + h*0.58, z + d*0.5); levelRoot.add(balcony);
+    addSolid(x, y + (h + roofH)/2, z, w + 0.4, h + roofH, d + 0.4);
+    rects.push({ x, z, r:Math.hypot(w, d)*0.5 + 3 });
+  }
+  return rects;
+}
+
+function buildAlpineCableCar(terrainFn){
+  const A = { x:-64, z:28 }, B = { x:66, z:-24 };
+  const yA = terrainFn(A.x, A.z), yB = terrainFn(B.x, B.z);
+  const towerH = 19;
+  const topA = yA + towerH, topB = yB + towerH;
+  const steel = new THREE.MeshStandardMaterial({ color:0x4b5560, roughness:.6, metalness:.4 });
+  const cabinMat = new THREE.MeshStandardMaterial({ color:0xd8e2e9, roughness:.7, metalness:.2 });
+  for(const P of [{ ...A, y:yA }, { ...B, y:yB }]){
+    const tower = new THREE.Mesh(new THREE.BoxGeometry(2.4, towerH, 2.4), steel);
+    tower.position.set(P.x, P.y + towerH/2, P.z); tower.castShadow = true; levelRoot.add(tower);
+    const cross = new THREE.Mesh(new THREE.BoxGeometry(7, 0.6, 0.6), steel);
+    cross.position.set(P.x, P.y + towerH, P.z); cross.castShadow = true; levelRoot.add(cross);
+    addSolid(P.x, P.y + towerH/2, P.z, 3.2, towerH, 3.2);
+    const station = new THREE.Mesh(new THREE.BoxGeometry(9, 5, 11), new THREE.MeshStandardMaterial({ color:0x6d4f36, roughness:.95 }));
+    const sy = terrainFn(P.x, P.z + 8);
+    station.position.set(P.x, sy + 2.5, P.z + 8); station.castShadow = true; levelRoot.add(station);
+    addSolid(P.x, sy + 2.5, P.z + 8, 9, 5, 11);
+  }
+  for(let i = 0; i < 2; i++){
+    const off = i ? 1.4 : -1.4;
+    const line = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(A.x + off, topA, A.z),
+        new THREE.Vector3(B.x + off, topB, B.z),
+      ]),
+      new THREE.LineBasicMaterial({ color:0x22262c })
+    );
+    levelRoot.add(line);
+    for(let k = 1; k <= 3; k++){
+      const u = k/4;
+      const cx = A.x + (B.x - A.x)*u;
+      const cz = A.z + (B.z - A.z)*u;
+      const cy = topA + (topB - topA)*u - 2.6;
+      const cabin = new THREE.Mesh(new THREE.BoxGeometry(2.0, 2.4, 2.0), cabinMat);
+      cabin.position.set(cx + off, cy, cz);
+      cabin.castShadow = true;
+      levelRoot.add(cabin);
+      const hanger = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(cx + off, cy + 1.2, cz),
+          new THREE.Vector3(cx + off, cy + 3.8, cz),
+        ]),
+        new THREE.LineBasicMaterial({ color:0x22262c })
+      );
+      levelRoot.add(hanger);
+    }
+  }
+}
+
+function buildAlpine(){
+  seed = 990099;
+  forestTrees = []; forestGrid = new Map();
+  const pts = trackLoopPoints(alpinePath, 240);
+  buildTrackBackdrop(0xe4ecf2, 0.15);
+  const tex = makeTerrainTexture('#e4ecf2', 'rgba(120,145,165,.10)', 'rgba(255,255,255,.45)', false);
+  tex.repeat.set(20, 20);
+  buildTrackTerrainMesh(alpineTerrain, ALPINE_R, 0xe4ecf2, 128, tex);
+  buildLoopRoad(alpinePath, 4.0, 0.12, 0xffffff, makeSnowRoadTexture(), 0.42, alpineTerrain);
+  const chalets = buildAlpineChalets(pts);
+  const cableSpots = [{ x:-64, z:28, r:15 }, { x:66, z:-24, r:15 }];
+  const blocked = (x, z) => {
+    for(const r of chalets){
+      const dx = x - r.x, dz = z - r.z;
+      if(dx*dx + dz*dz < r.r*r.r) return true;
+    }
+    for(const r of cableSpots){
+      const dx = x - r.x, dz = z - r.z;
+      if(dx*dx + dz*dz < r.r*r.r) return true;
+    }
+    return false;
+  };
+  buildScatterTrees(pts, 640, {
+    yFn:alpineTerrain, rMin:24, rMax:ALPINE_R - 30, roadClear:10.5, blocked,
+    leafA:0x2d5a3a, leafB:0x24492f, trunkColor:0x4a3826,
+    leafR:1.4, leafH:2.4, snow:true,
+  });
+  buildAlpineCableCar(alpineTerrain);
+  buildLoopStartArch(alpinePath, alpineTerrain, 0x4a3a2a);
+}
+
 /* --- описания уровней (возрастающая сложность) --- */
 const LEVELS = [
   {
@@ -7250,6 +7839,36 @@ const LEVELS = [
     raceId:'village',
     timeLimit:300,
     gates: buildLoopGates(villagePath, 40),
+  },
+  {
+    name:'Каменный карьер (40 ворот)',
+    brief:'Гонка по ступенчатому карьеру: 40 ворот на террасах и по краю чаши, между скалами и техникой. Перепад высот и пыль.',
+    start: loopStart(quarryPath, quarryTerrain),
+    terrain:'quarry',
+    race:true,
+    raceId:'quarry',
+    timeLimit:310,
+    gates: buildLoopGates(quarryPath, 40, quarryTerrain),
+  },
+  {
+    name:'Порт (40 ворот)',
+    brief:'Плотный слалом по причалам: 40 ворот среди контейнеров, кранов и складов, часть трассы — над водой.',
+    start: loopStart(portPath, null),
+    terrain:'port',
+    race:true,
+    raceId:'port',
+    timeLimit:280,
+    gates: buildLoopGates(portPath, 40),
+  },
+  {
+    name:'Зимний перевал (40 ворот)',
+    brief:'Снежная горная гонка: 40 ворот через холмы и перевал, мимо шале, елей и канатной дороги. Длинные планирования.',
+    start: loopStart(alpinePath, alpineTerrain),
+    terrain:'alpine',
+    race:true,
+    raceId:'alpine',
+    timeLimit:320,
+    gates: buildLoopGates(alpinePath, 40, alpineTerrain),
   },
   {
     name:'Свободный полёт',
@@ -7660,13 +8279,19 @@ function buildStadium(lv){
 /* --- сборка сцены уровня --- */
 function buildLevelScene(lv){
   clearLevelRoot();
-  const customTrack = lv.terrain === 'forest' || lv.terrain === 'city' || lv.terrain === 'village';
-  terrainFn = (lv.terrain === 'forest') ? forestTerrain : null;
+  const customTrack = lv.terrain === 'forest' || lv.terrain === 'city' || lv.terrain === 'village'
+    || lv.terrain === 'quarry' || lv.terrain === 'port' || lv.terrain === 'alpine';
+  terrainFn = (lv.terrain === 'forest') ? forestTerrain
+            : (lv.terrain === 'quarry') ? quarryTerrain
+            : (lv.terrain === 'alpine') ? alpineTerrain : null;
   (lv.obstacles||[]).forEach(buildObstacle);
   (lv.gates||[]).forEach((g,i)=>buildGateVisual(g, !!lv.race, i));
   if(lv.terrain === 'forest') buildForest();
   else if(lv.terrain === 'city') buildCity();
   else if(lv.terrain === 'village') buildVillage();
+  else if(lv.terrain === 'quarry') buildQuarry();
+  else if(lv.terrain === 'port') buildPort();
+  else if(lv.terrain === 'alpine') buildAlpine();
   else if(lv.race) buildStadium(lv);
   else if(lv.free) buildMapDecor(cfg.map);
   else if(lv.map) buildMapDecor(lv.map, lv.gates);

@@ -17,12 +17,14 @@
   рыскание, висение, слалом, развороты, точная посадка, полоса препятствий,
   восьмёрка, коридор, гонка на время (timeLimit), диагонали, узкие ворота
   (constraints.maxRoll), отказ мотора (emergency), свободный полёт).
-- **Гонки на время** (`race:true`): 7 трасс — 4 по мотивам MultiGP
+- **Гонки на время** (`race:true`): 10 трасс — 4 по мотивам MultiGP
   Universal Time Trial — «Серпантин» (UTT-1), «Цунами» (UTT-2, вертикальные
   ворота), «Спираль» (UTT-5 Nautilus), «Высокое напряжение» (UTT-4), плюс
   длинные кольцевые трассы с 40 воротами: лесная «Лесная дорога» (рельеф),
-  «Городская трасса» (кварталы, фонари, асфальт) и «Деревенская дорога»
-  (избы, заборы, поля, церковь): `timeLimit`
+  «Городская трасса» (кварталы, фонари, асфальт), «Деревенская дорога»
+  (избы, заборы, поля, церковь), «Каменный карьер» (террасы, скалы, техника),
+  «Порт» (контейнеры, краны, вода) и «Зимний перевал» (снежные холмы, шале,
+  канатная дорога): `timeLimit`
   (звёзды по времени); 4 трассы UTT проходят внутри **стадиона** (`buildStadium`,
   `map:'stadium'`): тёмное поле с разметкой/логотипом, борта, LED-борта, трибуны
   с козырьком, мачты прожекторов и табло с названием трассы. Габариты арены
@@ -36,7 +38,7 @@
   сбрасывается в `clearLevelRoot` (иначе dispose убьёт переиспользуемые текстуры).
   Для кольцевых трасс `buildRaceProps` не зовётся (арка/флажки ушли бы под
   рельеф/в застройку) — стартовая арка строится внутри `buildForest` /
-  `buildCity` / `buildVillage`.
+  `buildCity` / `buildVillage` / `buildQuarry` / `buildPort` / `buildAlpine`.
 - **Свободный полёт**: карты Луг / Город / Каньон (процедурный декор).
 - **Лесная трасса** (`terrain:'forest'`, `race:true` — в гоночном списке): длинная
    дорога-кольцо среди деревьев, **40 ворот**, рельеф поднимается и опускается.
@@ -52,6 +54,19 @@
    (`buildVillageHouses`), заборы (`buildVillageFences`), поля с копнами
    (`buildVillageFields`), церковь и колодец в центре (`buildVillageCentre`),
    деревья (`buildScatterTrees`). Стартовые арки — `buildLoopStartArch`.
+- **Карьер, порт, зимний перевал** (`terrain:'quarry'/'port'/'alpine'`):
+   те же кольца с 40 воротами. «Каменный карьер» — ступенчатая чаша
+   (`quarryTerrain`: 4 террасы в центре + высокий борт), скалы
+   (`buildQuarryRocks`, внешняя стена), самосвалы и экскаваторы
+   (`buildQuarryProps`), текстура грунта и фон `buildTrackBackdrop`.
+   «Порт» — плоский: вода 1200×1200 (`makeWaterTexture`), широкий бетонный
+   причал, контейнеры (`buildPortContainers`, InstancedMesh + `instanceColor`),
+   склады, портальные краны (`buildPortCrane`), пирсы и корабли; контейнеры
+   и склады дают AABB-коллайдеры. «Зимний перевал» — снежный рельеф
+   (`alpineTerrain`, `buildTrackTerrainMesh`), дорога-лента по рельефу,
+   ёлки со снежными шапками (`buildScatterTrees(..., {snow:true})`), шале
+   (`buildAlpineChalets`) и канатная дорога (`buildAlpineCableCar`).
+   У всех трёх — свои `TIME`-лимиты, мини-карта и сетевой спавн.
 - **USB-пульт**: Gamepad API (BetaFPV и любой HID), калибровка/назначение осей
   и кнопок, config в localStorage; статус в HUD.
 - **Клавиатура**: WASD + стрелки; **Shift + ↑/↓** — наклон камеры к БПЛА
@@ -73,8 +88,8 @@
   трафик P2P; синхронизация 20 Гц (позиция + кватернион), аппарат соперника —
   клон меша с подписью имени (sprite/CanvasTexture). Ручных кодов нет.
 - **Парная гонка 1×1 (админ)**: админ создаёт комнату с `params.pair` и
-  `params.race` (любая из 7 гоночных трасс:
-  `utt1/utt2/utt5/utt4/forest/city/village`).
+  `params.race` (любая из 10 гоночных трасс:
+  `utt1/utt2/utt5/utt4/forest/city/village/quarry/port/alpine`).
   В комнате 3 слота: админ-наблюдатель (`role:'spectator'`) + 2 гонщика.
   Админ не летит: его клиент получает `st` обоих бортов и рисует сплит-скрин
   FPV (две камеры 105°) + статистику (место, ворота, время, скорость, высота),
@@ -259,13 +274,15 @@ AGENTS.md               # этот файл
    напр. BetaFPV) — кнопка в `#gpModal`, `navigator.hid.requestDevice({filters:[]})`,
    разбор `device.collections`, синтетический пэд `WEBHID_PAD_INDEX=1000` вливается
    в тот же `gamepad.axes/buttons` (калибровка общая); авто-реконнект через `getDevices()`.
-5. **Уровни**: `LEVELS` (15 упражнений + 7 трасс-гонок `race:true`); ворота
+5. **Уровни**: `LEVELS` (15 упражнений + 10 трасс-гонок `race:true`); ворота
    `ring|hover|heading|altitude|land`; ограничения
    `constraints.{maxAlt,maxSpeed,maxRoll}` / `timeLimit` / `emergency`;
    у трасс есть `map:'stadium'` и `race`; `buildLevelScene` зовёт по приоритету:
    `terrain:'forest'` → `buildForest()` (лесная трасса, `buildRaceProps` для неё
    пропускается), `terrain:'city'` → `buildCity()`, `terrain:'village'` →
-   `buildVillage()` (обе плоские, со своими арками и коллайдерами `trackSolids`),
+   `buildVillage()`, `terrain:'quarry'` → `buildQuarry()`, `terrain:'port'` →
+   `buildPort()`, `terrain:'alpine'` → `buildAlpine()` (плоские/рельефные
+   кольцевые трассы со своими арками и коллайдерами `trackSolids`),
    иначе `race` → `buildStadium(lv)` (арена: поле, борта, LED-борта,
    трибуны+козырёк, прожекторы, табло; коллайдеры — `stadiumSolids`), иначе —
    `buildMapDecor(lv.map, lv.gates)` (а `makeDecorClear` держит коридор вдоль ворот
@@ -318,9 +335,9 @@ AGENTS.md               # этот файл
    не создаёт `RTCPeerConnection` (борт сразу виден).
    `players.slot` (0..3, наименьший свободный) — персональная точка спавна:
    `netSpawn(slot)` возвращает `{x,y,z}` — для плоских карт прежняя сетка `NET_SPAWNS`
-   у нуля, для кольцевых трасс (`TRACK_LOOPS`: forest/city/village) — точки вдоль
-   дороги у старта на высоте местного рельефа (`GROUND_REST + terrain`,
-   для города/деревни — `GROUND_REST`); при старте борта стоят рядом, а не в одной точке.
+   у нуля, для кольцевых трасс (`TRACK_LOOPS`: forest/city/village/quarry/port/alpine) —
+   точки вдоль дороги у старта на высоте местного рельефа (`GROUND_REST + terrain`,
+   для плоских — `GROUND_REST`); при старте борта стоят рядом, а не в одной точке.
    `loadLevel()` сбрасывает дрон в `lv.start`, поэтому после него
    `netPlaceLocalAtSpawn()` переставляет местный борт в свой слот (и разворачивает по `lv.start.yaw`).
    Перед стартом любой сетевой гонки — окно выбора камеры (`netRace.phase='waiting'`,
@@ -329,7 +346,7 @@ AGENTS.md               # этот файл
    прямо в цикле при `frozen`, иначе до старта она бы не переключалась.
    **Парная гонка** (`params.pair`, создаёт только админ): размер комнаты
    фиксирован `FLY_PAIR_MAX=3` (наблюдатель + 2 гонщика), хост — `spectator`.
-   `params.race` (`utt1/utt2/utt5/utt4/forest/city/village`) выбирает трассу; `applyNetGame`
+   `params.race` (`utt1/utt2/utt5/utt4/forest/city/village/quarry/port/alpine`) выбирает трассу; `applyNetGame`
    грузит уровень по `raceId` (а не только `map/forest`), `netLevelIndex()` —
    единая точка выбора. Гонщику клон админа не рисуется (`role:'spectator'`),
    админ не отправляет `st`/`race`. Клиент админа: `netSpectator` (в паре —
